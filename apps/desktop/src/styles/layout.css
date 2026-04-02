@@ -1,0 +1,88 @@
+body {
+  margin: 0;
+  font-family: "Segoe UI", "Noto Sans SC", sans-serif;
+  background: radial-gradient(circle at top left, #f7fbff, #edf2fa 45%, #e9eef8);
+  color: var(--text);
+}
+
+* {
+  box-sizing: border-box;
+}
+
+.app-shell {
+  min-height: 100vh;
+  padding: 16px;
+}
+
+.toolbar {
+  display: flex;
+  gap: 8px;
+  margin-bottom: 12px;
+}
+
+.toolbar button {
+  border: 1px solid var(--border);
+  background: var(--surface);
+  border-radius: 10px;
+  padding: 8px 12px;
+  cursor: pointer;
+}
+
+.workspace {
+  display: grid;
+  grid-template-columns: var(--left-panel-width) minmax(0, 1fr) var(--right-panel-width);
+  gap: 12px;
+  min-height: 600px;
+}
+
+.panel {
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: 14px;
+  padding: 12px;
+}
+
+.canvas {
+  background: linear-gradient(180deg, #ffffff, #f2f6fd);
+  border: 1px solid var(--border);
+  border-radius: 14px;
+  min-height: 580px;
+  padding: 12px;
+}
+
+.muted {
+  color: var(--muted);
+}
+
+.warning {
+  color: var(--danger);
+  font-weight: 600;
+}
+
+.table {
+  width: 100%;
+  border-collapse: collapse;
+}
+
+.table th,
+.table td {
+  border-bottom: 1px solid var(--border);
+  text-align: left;
+  padding: 8px;
+}
+
+@media (max-width: 1440px) {
+  .workspace {
+    grid-template-columns: 1fr;
+  }
+
+  .panel.left,
+  .panel.right {
+    display: none;
+  }
+
+  .panel.left.open,
+  .panel.right.open {
+    display: block;
+  }
+}
