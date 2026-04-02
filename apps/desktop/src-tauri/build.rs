@@ -1,3 +1,3 @@
-﻿fn main() {
-    tauri_build::build()
+fn main() {
+    // no-op for MVP development stage
 }
