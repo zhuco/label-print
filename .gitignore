@@ -1,0 +1,14 @@
+﻿.worktrees/
+node_modules/
+dist/
+coverage/
+.pnpm-store/
+
+# Tauri / Rust
+apps/desktop/src-tauri/target/
+**/*.rs.bk
+
+# IDE / OS
+.vscode/
+.DS_Store
+Thumbs.db
