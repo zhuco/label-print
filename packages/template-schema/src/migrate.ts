@@ -21,8 +21,15 @@ function isLegacyTemplate(value: unknown): value is LegacyTemplateV1 {
   );
 }
 
-function ensureArray(value: unknown): unknown[] {
-  return Array.isArray(value) ? value : [];
+function ensureElements(value: unknown): Record<string, unknown>[] {
+  if (!Array.isArray(value)) {
+    return [];
+  }
+
+  return value.filter(
+    (item): item is Record<string, unknown> =>
+      typeof item === 'object' && item !== null && !Array.isArray(item)
+  );
 }
 
 export function migrateTemplate(value: unknown): TemplateV2 {
@@ -33,7 +40,7 @@ export function migrateTemplate(value: unknown): TemplateV2 {
       unit: 'mm',
       widthMm: widthPx * PX_TO_MM,
       heightMm: heightPx * PX_TO_MM,
-      elements: ensureArray(elements),
+      elements: ensureElements(elements),
     };
   }
 

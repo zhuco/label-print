@@ -16,7 +16,10 @@ describe('buildPreview', () => {
   })
 
   it('reports missing required fields', () => {
-    const rows = [{ foo: '1', bar: '2' }, { bar: '3', baz: '4' }]
+    const rows: Record<string, string>[] = [
+      { foo: '1', bar: '2', baz: '' },
+      { foo: '', bar: '3', baz: '4' },
+    ]
     const preview = buildPreview(rows, ['foo', 'baz', 'missing'])
 
     expect(preview.missingColumns).toEqual(['missing'])

@@ -1,0 +1,25 @@
+name: Feature Request
+description: 提交功能建议
+labels: ["enhancement"]
+body:
+  - type: input
+    id: scene
+    attributes:
+      label: 使用场景
+      placeholder: 例如仓储批量箱码打印
+    validations:
+      required: true
+
+  - type: textarea
+    id: proposal
+    attributes:
+      label: 方案描述
+    validations:
+      required: true
+
+  - type: textarea
+    id: value
+    attributes:
+      label: 业务价值
+    validations:
+      required: true

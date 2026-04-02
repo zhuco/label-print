@@ -1,6 +1,6 @@
 import { z, type ZodIssue } from 'zod';
 
-const elementSchema = z.record(z.unknown());
+const elementSchema = z.record(z.string(), z.unknown());
 
 export const templateSchema = z.object({
   version: z.literal(2),

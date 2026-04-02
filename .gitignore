@@ -13,3 +13,8 @@ apps/desktop/src-tauri/gen/
 .vscode/
 .DS_Store
 Thumbs.db
+
+# Playwright outputs
+playwright-report/
+tests/e2e/test-results/
+

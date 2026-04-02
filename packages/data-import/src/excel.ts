@@ -7,8 +7,7 @@ const toArrayBuffer = (input: ExcelInput): ArrayBuffer => {
     return input
   }
 
-  const { buffer, byteOffset, byteLength } = input
-  return buffer.slice(byteOffset, byteOffset + byteLength)
+  return Uint8Array.from(input).buffer
 }
 
 export function parseExcel(input: ExcelInput): Record<string, string>[] {
