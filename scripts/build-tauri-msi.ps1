@@ -54,7 +54,7 @@ try {
         $lines.RemoveRange($start, $end - $start + 1)
     }
     $content = $lines -join "`r`n"
-    $content = $content -replace 'Description="[^"]+"', 'Description="Label Print template file"'
+    $content = $content -replace 'Description="[^"]+"', 'Description="恒策标签条码打印软件模板文件"'
     Set-Content -Path $mainWxs -Value $content -Encoding UTF8
 
     if (-not (Test-Path $tauriTools)) {
@@ -76,7 +76,7 @@ try {
         New-Item -ItemType Directory -Path $mdiOut | Out-Null
     }
 
-    $outMsi = Join-Path $mdiOut "Label Print_0.0.5_x64_en-US.msi"
+    $outMsi = Join-Path $mdiOut "恒策标签条码打印软件_0.0.5_x64_zh-CN.msi"
     Write-Host "链接 MSI 包..."
     Push-Location $wixDir
     & $light -loc "locale.wxl" -out $outMsi "main.wixobj"

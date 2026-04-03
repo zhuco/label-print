@@ -947,8 +947,8 @@ export default function App() {
             setActivePage("home");
           }}
         >
-          <span className="brand-mark">LP</span>
-          <span className="brand-name">标签打印</span>
+          <span className="brand-mark">HC</span>
+          <span className="brand-name">恒策标签条码打印软件</span>
         </button>
 
         <div className="title-tabs">

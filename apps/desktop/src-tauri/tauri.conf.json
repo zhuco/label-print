@@ -1,6 +1,6 @@
-{
+﻿{
   "$schema": "https://schema.tauri.app/config/2",
-  "productName": "Label Print",
+  "productName": "恒策标签条码打印软件",
   "version": "0.0.5",
   "identifier": "com.opensource.labelprint",
   "build": {
@@ -12,7 +12,7 @@
   "app": {
     "windows": [
       {
-        "title": "Label Print",
+        "title": "恒策标签条码打印软件",
         "width": 1280,
         "height": 800,
         "maximized": true,
@@ -30,10 +30,11 @@
     "fileAssociations": [
       {
         "ext": ["lpt"],
-        "name": "Label Print 模板文件",
-        "description": "Label Print 标签设计模板"
+        "name": "恒策标签条码打印软件模板文件",
+        "description": "恒策标签条码打印软件标签设计模板"
       }
     ]
   }
 }
+
 

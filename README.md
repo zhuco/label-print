@@ -1,4 +1,4 @@
-# 标签打印桌面应用（Label Print Desktop）
+# 恒策标签条码打印软件（Hengce Label Barcode Print）
 
 开源的单机标签编辑与打印软件（Windows x64），面向通用可配置场景，支持热敏打印机与批量可变数据打印。
 
