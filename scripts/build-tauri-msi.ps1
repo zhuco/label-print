@@ -1,5 +1,6 @@
 ﻿Param(
-    [switch]$SkipPnpmBuild
+    [switch]$SkipPnpmBuild,
+    [switch]$NoPause
 )
 
 function WaitForKey {
@@ -36,8 +37,23 @@ try {
     }
 
     Write-Host "处理 UI/描述字段..."
-    $content = Get-Content $mainWxs -Raw
-    $content = [regex]::Replace($content, "<UI>.*?</UIRef>", "", "Singleline")
+    $lines = New-Object System.Collections.Generic.List[string]
+    Get-Content $mainWxs | ForEach-Object { [void]$lines.Add($_) }
+    $start = -1
+    $end = -1
+    for ($i = 0; $i -lt $lines.Count; $i++) {
+        if ($start -eq -1 -and $lines[$i] -match "<UI>") {
+            $start = $i
+        }
+        elseif ($end -eq -1 -and $lines[$i] -match "<UIRef") {
+            $end = $i
+        }
+    }
+    Write-Host "UI 区间：start=$start, end=$end"
+    if ($start -ge 0 -and $end -ge $start) {
+        $lines.RemoveRange($start, $end - $start + 1)
+    }
+    $content = $lines -join "`r`n"
     $content = $content -replace 'Description="[^"]+"', 'Description="Label Print template file"'
     Set-Content -Path $mainWxs -Value $content -Encoding UTF8
 
@@ -71,5 +87,7 @@ try {
     Write-Host $_.Exception.Message -ForegroundColor Red
     $_ | Format-List -Force
 } finally {
-    WaitForKey
+    if (-not $NoPause) {
+        WaitForKey
+    }
 }

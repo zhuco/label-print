@@ -36,6 +36,22 @@ const DDL_IMPORT_SAMPLE = `<?xml version="1.0" encoding="UTF-8"?>
 </DLabel>`;
 
 describe("App shell", () => {
+  const enterEditorMode = (container: HTMLElement) => {
+    const tabButton = container.querySelector<HTMLButtonElement>(".doc-tab > button");
+    if (tabButton) {
+      fireEvent.click(tabButton);
+      return;
+    }
+
+    const newTabButton = container.querySelector<HTMLButtonElement>(".new-tab");
+    expect(newTabButton).not.toBeNull();
+    fireEvent.click(newTabButton!);
+
+    const confirmButton = container.querySelector<HTMLButtonElement>(".new-label-modal .primary");
+    expect(confirmButton).not.toBeNull();
+    fireEvent.click(confirmButton!);
+  };
+
   afterEach(() => {
     cleanup();
   });
@@ -56,18 +72,27 @@ describe("App shell", () => {
   });
 
   it("renders custom titlebar with logo and tabs", () => {
-    render(<App />);
-    expect(screen.getByText("标签打印")).toBeInTheDocument();
-    expect(screen.getByRole("button", { name: /\+ / })).toBeInTheDocument();
+    const { container } = render(<App />);
+    expect(container.querySelector(".brand-home")).not.toBeNull();
+    expect(container.querySelector(".new-tab")).not.toBeNull();
+  });
+
+  it("starts on home page without opening new label modal", () => {
+    const { container } = render(<App />);
+    expect(container.querySelector(".home-page")).not.toBeNull();
+    expect(container.querySelector(".shell-commandbar")).toBeNull();
+    expect(container.querySelector(".new-label-modal")).toBeNull();
+    expect(container.querySelector(".doc-tab")).toBeNull();
   });
 
   it("returns to home when clicking logo area", () => {
-    render(<App />);
-    fireEvent.click(screen.getByRole("button", { name: /标签打印/ }));
+    const { container } = render(<App />);
+    const homeButton = container.querySelector<HTMLButtonElement>(".brand-home");
+    expect(homeButton).not.toBeNull();
+    fireEvent.click(homeButton!);
 
-    expect(screen.getByRole("button", { name: "新建标签" })).toBeInTheDocument();
-    expect(screen.getByRole("button", { name: "打开标签" })).toBeInTheDocument();
-    expect(screen.getByPlaceholderText("输入文件名或标签名")).toBeInTheDocument();
+    expect(container.querySelector(".home-page")).not.toBeNull();
+    expect(container.querySelector(".shell-commandbar")).toBeNull();
   });
 
   it("starts window drag after moving on right blank titlebar area with left button", () => {
@@ -111,6 +136,7 @@ describe("App shell", () => {
 
   it("does not trigger drag when pressing a tab button", () => {
     const { container } = render(<App />);
+    enterEditorMode(container);
     const tabButton = container.querySelector<HTMLButtonElement>(".doc-tab > button");
     expect(tabButton).not.toBeNull();
 
@@ -127,12 +153,13 @@ describe("App shell", () => {
   });
 
   it("uses file picker when clicking open command button", () => {
-    const { container, getByTestId } = render(<App />);
+    const { container } = render(<App />);
+    enterEditorMode(container);
     const fileInput = container.querySelector<HTMLInputElement>('input[type="file"]');
     expect(fileInput).not.toBeNull();
 
     const clickSpy = vi.spyOn(fileInput!, "click");
-    fireEvent.click(getByTestId("cmd-open"));
+    fireEvent.click(screen.getByTestId("cmd-open"));
     expect(clickSpy).toHaveBeenCalledTimes(1);
   });
 
@@ -147,8 +174,9 @@ describe("App shell", () => {
       createWritable: createWritableMock,
     });
 
-    const { getByTestId } = render(<App />);
-    fireEvent.click(getByTestId("cmd-save"));
+    const { container } = render(<App />);
+    enterEditorMode(container);
+    fireEvent.click(screen.getByTestId("cmd-save"));
 
     await waitFor(() => expect(showSaveFilePickerMock).toHaveBeenCalledTimes(1));
     expect(createWritableMock).toHaveBeenCalledTimes(1);
@@ -164,22 +192,23 @@ describe("App shell", () => {
       close: closeMock,
     });
     showSaveFilePickerMock.mockResolvedValue({
-      name: "客户标签.lpt",
+      name: "\u5ba2\u6237\u6807\u7b7e.lpt",
       createWritable: createWritableMock,
     });
 
-    const { getByTestId, container } = render(<App />);
+    const { container } = render(<App />);
+    enterEditorMode(container);
 
-    fireEvent.click(getByTestId("cmd-save"));
+    fireEvent.click(screen.getByTestId("cmd-save"));
     await waitFor(() => expect(showSaveFilePickerMock).toHaveBeenCalledTimes(1));
     await waitFor(() => expect(createWritableMock).toHaveBeenCalledTimes(1));
 
-    fireEvent.click(getByTestId("cmd-save"));
+    fireEvent.click(screen.getByTestId("cmd-save"));
     await waitFor(() => expect(createWritableMock).toHaveBeenCalledTimes(2));
     expect(showSaveFilePickerMock).toHaveBeenCalledTimes(1);
 
     const activeTabButton = container.querySelector<HTMLButtonElement>(".doc-tab.active > button");
-    expect(activeTabButton?.textContent).toBe("客户标签");
+    expect(activeTabButton?.textContent).toBe("\u5ba2\u6237\u6807\u7b7e");
   });
 
   it("does not show unsaved labels in recent list", async () => {
@@ -209,16 +238,17 @@ describe("App shell", () => {
       close: closeMock,
     });
     showSaveFilePickerMock.mockResolvedValue({
-      name: "货架标签.lpt",
+      name: "\u8d27\u67b6\u6807\u7b7e.lpt",
       createWritable: createWritableMock,
     });
 
-    const { getByTestId, container } = render(<App />);
+    const { container } = render(<App />);
+    enterEditorMode(container);
     const toolButtons = container.querySelectorAll<HTMLButtonElement>(".palette-tool");
     expect(toolButtons.length).toBeGreaterThan(0);
     fireEvent.click(toolButtons[0]);
 
-    fireEvent.click(getByTestId("cmd-save"));
+    fireEvent.click(screen.getByTestId("cmd-save"));
     await waitFor(() => expect(createWritableMock).toHaveBeenCalledTimes(1));
 
     const homeButton = container.querySelector<HTMLButtonElement>(".brand-home");
@@ -226,7 +256,7 @@ describe("App shell", () => {
     fireEvent.click(homeButton!);
 
     await waitFor(() => {
-      expect(container.querySelector(".home-recent-meta > h4")?.textContent).toBe("货架标签");
+      expect(container.querySelector(".home-recent-meta > h4")?.textContent).toBe("\u8d27\u67b6\u6807\u7b7e");
     });
     expect(container.querySelector(".home-recent-thumbnail")).not.toBeNull();
     expect(container.querySelectorAll(".home-thumb-element").length).toBeGreaterThan(0);
@@ -251,7 +281,9 @@ describe("App shell", () => {
 
     await waitFor(() => {
       expect(container.querySelector(".command-status")?.textContent).toContain("import-case.ddl");
-      expect(container.querySelector(".command-status")?.textContent).toContain("导入2个元素，忽略1个");
+      expect(container.querySelector(".command-status")?.textContent).toContain(
+        "\u5bfc\u51652\u4e2a\u5143\u7d20\uff0c\u5ffd\u75651\u4e2a"
+      );
       expect(container.querySelector(".command-status")?.textContent).toContain("itemtype=99");
       const tabTitles = Array.from(container.querySelectorAll<HTMLButtonElement>(".doc-tab > button")).map(
         (button) => button.textContent
@@ -266,7 +298,7 @@ describe("App shell", () => {
     expect(fileInput).not.toBeNull();
 
     const firstContent = JSON.stringify({
-      title: "重复标签A",
+      title: "\u91cd\u590d\u6807\u7b7eA",
       labelSize: { widthMm: 40, heightMm: 30 },
       elements: [],
       calibration: { offsetX: 0, offsetY: 0, scale: 1 },
@@ -274,7 +306,7 @@ describe("App shell", () => {
       copies: 1,
     });
     const secondContent = JSON.stringify({
-      title: "重复标签B",
+      title: "\u91cd\u590d\u6807\u7b7eB",
       labelSize: { widthMm: 50, heightMm: 30 },
       elements: [],
       calibration: { offsetX: 0, offsetY: 0, scale: 1 },
@@ -294,7 +326,7 @@ describe("App shell", () => {
     fireEvent.change(fileInput!);
 
     await waitFor(() => {
-      expect(container.querySelector(".doc-tab.active > button")?.textContent).toBe("重复标签A");
+      expect(container.querySelector(".doc-tab.active > button")?.textContent).toBe("\u91cd\u590d\u6807\u7b7eA");
     });
     const tabCountAfterFirstOpen = container.querySelectorAll(".doc-tab").length;
 
@@ -310,9 +342,11 @@ describe("App shell", () => {
     fireEvent.change(fileInput!);
 
     await waitFor(() => {
-      expect(container.querySelector(".command-status")?.textContent).toContain("已切换到已打开模板：重复标签A。");
+      expect(container.querySelector(".command-status")?.textContent).toContain(
+        "\u5df2\u5207\u6362\u5230\u5df2\u6253\u5f00\u6a21\u677f\uff1a\u91cd\u590d\u6807\u7b7eA\u3002"
+      );
       expect(container.querySelectorAll(".doc-tab")).toHaveLength(tabCountAfterFirstOpen);
-      expect(container.querySelector(".doc-tab.active > button")?.textContent).toBe("重复标签A");
+      expect(container.querySelector(".doc-tab.active > button")?.textContent).toBe("\u91cd\u590d\u6807\u7b7eA");
     });
   });
 });

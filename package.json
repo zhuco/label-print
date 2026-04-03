@@ -6,7 +6,7 @@
     "test": "pnpm -r test",
     "check:mojibake": "node scripts/check-mojibake.mjs",
     "lint": "pnpm -r lint && pnpm check:mojibake",
-    "build-installer": "powershell -ExecutionPolicy Bypass -File scripts/build-tauri-msi.ps1",
+    "build-installer": "powershell -ExecutionPolicy Bypass -File scripts/build-tauri-msi.ps1 -NoPause",
     "hooks:enable": "git config core.hooksPath .githooks"
   }
 }

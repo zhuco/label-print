@@ -20,7 +20,7 @@ import {
   type TemplateSnapshot,
 } from "./features/editor/core/template-snapshot";
 import type { EditorElement, LabelSize } from "./features/editor/core/types";
-import { type Calibration, selectActiveDocument, useEditorStore } from "./features/editor/editor.store";
+import { type Calibration, type EditorDocument, selectActiveDocument, useEditorStore } from "./features/editor/editor.store";
 import { HomePage, type HomeRecentItem } from "./features/home/HomePage";
 import { listSystemFonts } from "./services/ipc/fonts";
 import { submitPrintTask } from "./services/ipc/print";
@@ -163,6 +163,20 @@ function parsePositive(value: number, fallback: number): number {
   }
   return Math.max(LABEL_MIN_SIZE_MM, value);
 }
+
+function isInitialUntouchedDocument(document: EditorDocument): boolean {
+  return (
+    document.title === "新建标签1" &&
+    document.filePath === null &&
+    document.labelSize.widthMm === 40 &&
+    document.labelSize.heightMm === 30 &&
+    document.elements.length === 0 &&
+    document.selectedIds.length === 0 &&
+    document.undoStack.length === 0 &&
+    document.redoStack.length === 0
+  );
+}
+
 function sanitizeFileName(input: string): string {
   const trimmed = input.trim();
   const base = trimmed.length > 0 ? trimmed : "label-template";
@@ -339,7 +353,7 @@ export default function App() {
   const [templateRows, setTemplateRows] = useState<TemplateDto[]>([]);
   const [systemFonts, setSystemFonts] = useState<FontOption[]>(DEFAULT_FONT_OPTIONS);
   const [titlebarDragStart, setTitlebarDragStart] = useState<{ x: number; y: number } | null>(null);
-  const [activePage, setActivePage] = useState<"editor" | "home">("editor");
+  const [activePage, setActivePage] = useState<"editor" | "home">("home");
   const [recentOpenedItems, setRecentOpenedItems] = useState<HomeRecentItem[]>(() => readRecentOpenedItems());
   const [homeSearchKeyword, setHomeSearchKeyword] = useState("");
 
@@ -361,6 +375,8 @@ export default function App() {
       return fileName.includes(keyword) || title.includes(keyword);
     });
   }, [homeSearchKeyword, recentOpenedItems]);
+  const hasOnlyInitialUntouchedDocument = documents.length === 1 && isInitialUntouchedDocument(documents[0]);
+  const visibleDocuments = activePage === "home" && hasOnlyInitialUntouchedDocument ? [] : documents;
 
   const focusOpenedDocumentByFileName = (fileName: string): boolean => {
     const lookupKey = normalizeDocumentLookupKey(fileName);
@@ -501,23 +517,29 @@ export default function App() {
   }, [titlebarDragStart]);
 
   const openNewLabelModal = () => {
-    setNewLabelTitle(`新建标签${documents.length + 1}`);
+    const existingDocumentCount = hasOnlyInitialUntouchedDocument ? 0 : documents.length;
+    setNewLabelTitle(`新建标签${existingDocumentCount + 1}`);
     setNewLabelWidth(40);
     setNewLabelHeight(30);
     setNewLabelOpen(true);
   };
 
   const confirmCreateLabel = () => {
-    const nextTitle = newLabelTitle.trim() || `新建标签${documents.length + 1}`;
+    const existingDocumentCount = hasOnlyInitialUntouchedDocument ? 0 : documents.length;
+    const nextTitle = newLabelTitle.trim() || `新建标签${existingDocumentCount + 1}`;
     const nextLabelSize = {
       widthMm: parsePositive(newLabelWidth, 40),
       heightMm: parsePositive(newLabelHeight, 30),
     };
+    const initialDocumentId = hasOnlyInitialUntouchedDocument ? documents[0]?.id : null;
 
     createDocument({
       title: nextTitle,
       labelSize: nextLabelSize,
     });
+    if (initialDocumentId) {
+      closeDocument(initialDocumentId);
+    }
 
     setNewLabelOpen(false);
     setActivePage("editor");
@@ -693,11 +715,15 @@ export default function App() {
       return false;
     }
 
+    const initialDocumentId = hasOnlyInitialUntouchedDocument ? documents[0]?.id : null;
     createDocument({
       title: snapshot.title,
       labelSize: snapshot.labelSize,
       filePath: sourceFileName?.trim() || null,
     });
+    if (initialDocumentId) {
+      closeDocument(initialDocumentId);
+    }
     replaceElements(snapshot.elements.map((element) => cloneElement(element)), [], false);
     setCalibration(snapshot.calibration);
     setPrinterConfig({ printerId: snapshot.printerId, copies: snapshot.copies });
@@ -926,7 +952,7 @@ export default function App() {
         </button>
 
         <div className="title-tabs">
-          {documents.map((document) => (
+          {visibleDocuments.map((document) => (
             <div
               key={document.id}
               className={`doc-tab ${document.id === activeDocument.id ? "active" : ""}`}
@@ -941,7 +967,7 @@ export default function App() {
               >
                 {document.title}
               </button>
-              {documents.length > 1 ? (
+              {visibleDocuments.length > 1 ? (
                 <button
                   type="button"
                   className="close-tab"
