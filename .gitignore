@@ -1,8 +1,13 @@
-﻿.worktrees/
+.worktrees/
 node_modules/
 dist/
 coverage/
 .pnpm-store/
+/docs/superpowers/
+
+# Local runtime artifacts
+*.log
+*.db
 
 # Tauri / Rust
 apps/desktop/src-tauri/target/
@@ -17,4 +22,3 @@ Thumbs.db
 # Playwright outputs
 playwright-report/
 tests/e2e/test-results/
-

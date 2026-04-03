@@ -1,76 +1,81 @@
-import { useMemo, useState } from "react";
+import { useEffect, useState } from "react";
 
 import { DataImportDrawer } from "../data-import/DataImportDrawer";
-import { PrintPanel } from "../print/PrintPanel";
 import { CanvasStage } from "./CanvasStage";
+import type { FontOption } from "./core/font-options";
 import { LeftPalette } from "./LeftPalette";
 import { RightInspector } from "./RightInspector";
 import { useEditorStore } from "./editor.store";
 
-const SMALL_BREAKPOINT = 1440;
+type EditorPageProps = {
+  systemFonts?: FontOption[];
+};
 
-export function EditorPage() {
-  const elements = useEditorStore((state) => state.elements);
-  const addElement = useEditorStore((state) => state.addElement);
+export function EditorPage({ systemFonts = [] }: EditorPageProps) {
+  const addTextElement = useEditorStore((state) => state.addTextElement);
+  const addBarcodeElement = useEditorStore((state) => state.addBarcodeElement);
+  const addImageElement = useEditorStore((state) => state.addImageElement);
+  const addQrcodeElement = useEditorStore((state) => state.addQrcodeElement);
+  const addShapeElement = useEditorStore((state) => state.addShapeElement);
+  const addIconElement = useEditorStore((state) => state.addIconElement);
+  const deleteSelection = useEditorStore((state) => state.deleteSelection);
 
-  const [leftOpen, setLeftOpen] = useState(false);
-  const [rightOpen, setRightOpen] = useState(false);
+  const [importOpen, setImportOpen] = useState(false);
 
-  const isCompact = useMemo(() => {
-    if (typeof window === "undefined") {
-      return false;
-    }
-    return window.innerWidth <= SMALL_BREAKPOINT;
-  }, []);
+  useEffect(() => {
+    const onKeyDown = (event: KeyboardEvent) => {
+      if (event.key !== "Delete") {
+        return;
+      }
 
-  const addText = () => {
-    addElement({
-      id: `text-${Date.now()}`,
-      type: "text",
-      label: "文本元素",
-    });
-  };
+      const target = event.target as HTMLElement | null;
+      if (target && ["INPUT", "TEXTAREA", "SELECT"].includes(target.tagName)) {
+        return;
+      }
+      if (target?.isContentEditable) {
+        return;
+      }
+      deleteSelection();
+    };
 
-  const addBarcode = () => {
-    addElement({
-      id: `barcode-${Date.now()}`,
-      type: "barcode",
-      label: "条码元素",
-    });
-  };
+    window.addEventListener("keydown", onKeyDown);
+    return () => window.removeEventListener("keydown", onKeyDown);
+  }, [deleteSelection]);
 
   return (
-    <section>
-      {isCompact && (
-        <div className="toolbar">
-          <button type="button" onClick={() => setLeftOpen((v) => !v)} aria-label="展开元素面板">
-            {leftOpen ? "收起元素面板" : "展开元素面板"}
-          </button>
-          <button type="button" onClick={() => setRightOpen((v) => !v)} aria-label="展开属性面板">
-            {rightOpen ? "收起属性面板" : "展开属性面板"}
-          </button>
-        </div>
-      )}
-
-      <div className="workspace">
-        <aside className={`panel left ${leftOpen ? "open" : ""}`}>
-          <LeftPalette onAddText={addText} onAddBarcode={addBarcode} />
+    <section className="editor-page">
+      <div className="workspace editor-workspace">
+        <aside className="panel left toolbar-panel">
+          <LeftPalette
+            onAddText={addTextElement}
+            onAddBarcode={addBarcodeElement}
+            onAddImage={addImageElement}
+            onAddQrcode={addQrcodeElement}
+            onAddShape={addShapeElement}
+            onAddIcon={addIconElement}
+          />
         </aside>
 
-        <CanvasStage elements={elements} />
+        <CanvasStage systemFonts={systemFonts} />
 
-        <aside className={`panel right ${rightOpen ? "open" : ""}`}>
-          <RightInspector selected={elements[0] ?? null} />
+        <aside className="panel right">
+          <RightInspector systemFonts={systemFonts} />
         </aside>
       </div>
 
-      <DataImportDrawer requiredFields={["sku", "price"]} />
-      <PrintPanel
-        jobs={[{ id: 1, status: "running", totalItems: 20 }]}
-        onPause={() => undefined}
-        onResume={() => undefined}
-        onCancel={() => undefined}
-      />
+      {importOpen ? (
+        <div className="modal-mask" onClick={() => setImportOpen(false)}>
+          <section className="modal-card import-modal" onClick={(event) => event.stopPropagation()}>
+            <header className="modal-header">
+              <h3>导入数据</h3>
+              <button type="button" onClick={() => setImportOpen(false)} aria-label="关闭导入弹窗">
+                ×
+              </button>
+            </header>
+            <DataImportDrawer requiredFields={["sku", "price", "code"]} />
+          </section>
+        </div>
+      ) : null}
     </section>
   );
 }

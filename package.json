@@ -4,6 +4,9 @@
   "packageManager": "pnpm@10.30.3",
   "scripts": {
     "test": "pnpm -r test",
-    "lint": "pnpm -r lint"
+    "check:mojibake": "node scripts/check-mojibake.mjs",
+    "lint": "pnpm -r lint && pnpm check:mojibake",
+    "build-installer": "powershell -ExecutionPolicy Bypass -File scripts/build-tauri-msi.ps1",
+    "hooks:enable": "git config core.hooksPath .githooks"
   }
 }

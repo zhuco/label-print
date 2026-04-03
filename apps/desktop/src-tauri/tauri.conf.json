@@ -1,12 +1,12 @@
 {
   "$schema": "https://schema.tauri.app/config/2",
   "productName": "Label Print",
-  "version": "0.1.0",
+  "version": "0.0.5",
   "identifier": "com.opensource.labelprint",
   "build": {
-    "beforeDevCommand": "pnpm --dir ../desktop dev",
-    "beforeBuildCommand": "pnpm --dir ../desktop build",
-    "frontendDist": "../desktop/dist",
+    "beforeDevCommand": "pnpm --filter @label/desktop dev -- --host 127.0.0.1 --port 5173",
+    "beforeBuildCommand": "pnpm --filter @label/desktop build",
+    "frontendDist": "../dist",
     "devUrl": "http://localhost:5173"
   },
   "app": {
@@ -14,12 +14,26 @@
       {
         "title": "Label Print",
         "width": 1280,
-        "height": 800
+        "height": 800,
+        "maximized": true,
+        "decorations": false
       }
     ]
   },
   "bundle": {
     "active": true,
-    "targets": "all"
+    "targets": ["nsis", "msi"],
+    "icon": [
+      "icons/icon.ico",
+      "icons/icon.png"
+    ],
+    "fileAssociations": [
+      {
+        "ext": ["lpt"],
+        "name": "Label Print 模板文件",
+        "description": "Label Print 标签设计模板"
+      }
+    ]
   }
 }
+

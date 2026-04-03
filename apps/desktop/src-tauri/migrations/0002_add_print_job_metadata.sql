@@ -1,0 +1,4 @@
+ALTER TABLE print_jobs ADD COLUMN printer_id TEXT NOT NULL DEFAULT '';
+ALTER TABLE print_jobs ADD COLUMN copies INTEGER NOT NULL DEFAULT 1;
+ALTER TABLE print_jobs ADD COLUMN calibration_json TEXT NOT NULL DEFAULT '{}';
+ALTER TABLE print_jobs ADD COLUMN payload_json TEXT NOT NULL DEFAULT '{}';

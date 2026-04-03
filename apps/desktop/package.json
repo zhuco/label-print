@@ -6,17 +6,23 @@
   "scripts": {
     "dev": "vite",
     "build": "vite build",
+    "tauri:dev": "tauri dev",
+    "tauri:build": "tauri build",
+    "tauri:build:portable": "tauri build -- --no-bundle",
     "test": "vitest run",
     "lint": "tsc --noEmit"
   },
   "dependencies": {
     "@label/data-import": "workspace:*",
     "@label/template-schema": "workspace:*",
+    "@tauri-apps/api": "^2.8.0",
+    "jsbarcode": "3.12.1",
     "react": "^18.3.1",
     "react-dom": "^18.3.1",
     "zustand": "^5.0.8"
   },
   "devDependencies": {
+    "@tauri-apps/cli": "^2.10.1",
     "@testing-library/jest-dom": "^6.6.3",
     "@testing-library/react": "^16.1.0",
     "@types/react": "^18.3.18",

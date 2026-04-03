@@ -1,0 +1,11 @@
+#!/usr/bin/env sh
+
+pnpm check:mojibake
+status=$?
+
+if [ "$status" -ne 0 ]; then
+  echo "检测到编码或乱码问题，已阻止提交。"
+  exit "$status"
+fi
+
+exit 0

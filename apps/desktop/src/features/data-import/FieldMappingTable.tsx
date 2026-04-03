@@ -10,7 +10,7 @@ export function FieldMappingTable({ columns, missingColumns }: FieldMappingTable
       {missingColumns.length > 0 ? (
         <p className="warning">缺失字段: {missingColumns.join(", ")}</p>
       ) : (
-        <p className="muted">字段完整，可开始打印。</p>
+        <p className="muted">字段完整，可开始提交打印任务。</p>
       )}
       <p className="muted">检测到列: {columns.join(", ") || "(空)"}</p>
     </section>
