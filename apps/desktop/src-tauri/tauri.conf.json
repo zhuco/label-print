@@ -1,10 +1,10 @@
-﻿{
+{
   "$schema": "https://schema.tauri.app/config/2",
   "productName": "恒策标签条码打印软件",
-  "version": "0.0.5",
+  "version": "0.1.1",
   "identifier": "com.opensource.labelprint",
   "build": {
-    "beforeDevCommand": "pnpm --filter @label/desktop dev -- --host 127.0.0.1 --port 5173",
+    "beforeDevCommand": "pnpm --filter @label/desktop exec vite --host 127.0.0.1 --port 5173 --strictPort",
     "beforeBuildCommand": "pnpm --filter @label/desktop build",
     "frontendDist": "../dist",
     "devUrl": "http://localhost:5173"
@@ -15,7 +15,7 @@
         "title": "恒策标签条码打印软件",
         "width": 1280,
         "height": 800,
-        "maximized": true,
+        "maximized": false,
         "decorations": false
       }
     ]
@@ -36,5 +36,3 @@
     ]
   }
 }
-
-

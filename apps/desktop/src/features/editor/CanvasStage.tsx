@@ -4,6 +4,8 @@ import {
   useMemo,
   useRef,
   useState,
+  type FocusEvent,
+  type CSSProperties,
   type KeyboardEvent,
   type MouseEvent as ReactMouseEvent,
   type WheelEvent,
@@ -13,9 +15,14 @@ import { useDataImportStore } from "../data-import/data-import.store";
 import { BarcodePreview } from "./BarcodePreview";
 import { QrcodePreview } from "./QrcodePreview";
 import { resolveBindingValue } from "./core/binding";
+import { buildBarcodeTextStyle } from "./core/barcode-text-style";
 import { DEFAULT_FONT_OPTIONS, type FontOption, withCurrentFont } from "./core/font-options";
 import { buildSnapTargets, snapElementPosition, type SnapTargets } from "./core/layout";
+import { buildRulerTicks, isMajorRulerTick, shouldShowRulerLabel } from "./core/ruler";
+import { buildTextDecoration, computeSingleLineScaleX } from "./core/text-style";
 import type { EditorElement, TextStyle } from "./core/types";
+import { TextStyleIcon } from "./TextStyleIcon";
+import { PresetGlyph, readIconPresetIdFromBinding, readShapePresetIdFromBinding } from "./core/visual-presets";
 import { selectActiveDocument, useEditorStore } from "./editor.store";
 
 const MM_TO_PX = 8;
@@ -114,7 +121,9 @@ export function CanvasStage({ systemFonts }: CanvasStageProps) {
       : null;
   const selectedTextStyle = selectedElement?.textStyle;
   const currentFontWeight = selectedTextStyle?.fontWeight ?? 400;
+  const currentItalic = selectedTextStyle?.italic ?? false;
   const currentUnderline = selectedTextStyle?.underline ?? false;
+  const currentStrikeThrough = selectedTextStyle?.strikeThrough ?? false;
   const currentAlign = selectedTextStyle?.align ?? "left";
   const currentWrapMode = selectedTextStyle?.wrapMode ?? "auto";
   const toolbarFonts = useMemo(() => {
@@ -126,13 +135,12 @@ export function CanvasStage({ systemFonts }: CanvasStageProps) {
     () => ({
       width: labelSize.widthMm * mmToPx,
       height: labelSize.heightMm * mmToPx,
-      backgroundSize: `${16 * zoom}px ${16 * zoom}px`,
     }),
-    [labelSize.heightMm, labelSize.widthMm, mmToPx, zoom]
+    [labelSize.heightMm, labelSize.widthMm, mmToPx]
   );
 
-  const xTicks = useMemo(() => buildTicks(labelSize.widthMm, 5), [labelSize.widthMm]);
-  const yTicks = useMemo(() => buildTicks(labelSize.heightMm, 5), [labelSize.heightMm]);
+  const xTicks = useMemo(() => buildRulerTicks(labelSize.widthMm), [labelSize.widthMm]);
+  const yTicks = useMemo(() => buildRulerTicks(labelSize.heightMm), [labelSize.heightMm]);
 
   const fitToViewport = useCallback(() => {
     const container = scrollRef.current;
@@ -154,7 +162,7 @@ export function CanvasStage({ systemFonts }: CanvasStageProps) {
 
   useEffect(() => {
     fitToViewport();
-  }, [fitToViewport, activeDocument.id, labelSize.heightMm, labelSize.widthMm]);
+  }, [fitToViewport, labelSize.heightMm, labelSize.widthMm]);
 
   useEffect(() => {
     const onResize = () => fitToViewport();
@@ -293,6 +301,7 @@ export function CanvasStage({ systemFonts }: CanvasStageProps) {
           fontWeight: 0,
           italic: false,
           underline: false,
+          strikeThrough: false,
           align: "left" as const,
           color: "",
           letterSpacing: 0,
@@ -381,6 +390,22 @@ export function CanvasStage({ systemFonts }: CanvasStageProps) {
     }
   };
 
+  const onTextareaKeyDown = (event: KeyboardEvent<HTMLTextAreaElement>) => {
+    if (event.key === "Escape") {
+      event.preventDefault();
+      setEditing(null);
+      return;
+    }
+    if (event.key === "Enter" && event.ctrlKey) {
+      event.preventDefault();
+      commitEditing();
+    }
+  };
+
+  const selectAllOnFocus = (event: FocusEvent<HTMLInputElement | HTMLTextAreaElement>) => {
+    event.currentTarget.select();
+  };
+
   const onStyleChange = (patch: Partial<TextStyle>) => {
     if (!hasSelection) {
       return;
@@ -406,10 +431,12 @@ export function CanvasStage({ systemFonts }: CanvasStageProps) {
     <div className="canvas-stage-wrap">
       <div className="canvas-toolbar">
         <div className="canvas-text-toolbar">
-          <label className="toolbar-inline">
-            字体
+          <label className="toolbar-inline compact-control">
+            <span className="visually-hidden">字体</span>
             <select
               value={selectedElement?.textStyle.fontFamily ?? toolbarFonts[0]?.value ?? DEFAULT_FONT_OPTIONS[0].value}
+              aria-label="字体"
+              title="字体"
               onChange={(event) => onStyleChange({ fontFamily: event.target.value })}
               disabled={!hasSelection}
             >
@@ -421,12 +448,14 @@ export function CanvasStage({ systemFonts }: CanvasStageProps) {
             </select>
           </label>
 
-          <label className="toolbar-inline compact">
-            字号
+          <label className="toolbar-inline compact-control compact">
+            <span className="visually-hidden">字号</span>
             <input
               type="number"
               min={1}
               value={selectedTextStyle?.fontSize ?? 24}
+              aria-label="字号"
+              title="字号"
               onChange={(event) => onStyleChange({ fontSize: Number(event.target.value) || 1 })}
               disabled={!hasSelection}
             />
@@ -434,7 +463,7 @@ export function CanvasStage({ systemFonts }: CanvasStageProps) {
 
           <button
             type="button"
-            className={`tool-ghost toolbar-btn ${currentFontWeight >= 700 ? "active" : ""}`}
+            className={`tool-ghost toolbar-btn icon-square-btn ${currentFontWeight >= 700 ? "active" : ""}`}
             onClick={() =>
               onStyleChange({
                 fontWeight: currentFontWeight >= 700 ? 400 : 700,
@@ -442,47 +471,69 @@ export function CanvasStage({ systemFonts }: CanvasStageProps) {
             }
             disabled={!hasSelection}
             title="加粗"
+            aria-label="加粗"
           >
-            B
+            <TextStyleIcon kind="bold" className="text-style-icon" />
           </button>
           <button
             type="button"
-            className={`tool-ghost toolbar-btn ${currentUnderline ? "active" : ""}`}
+            className={`tool-ghost toolbar-btn icon-square-btn ${currentItalic ? "active" : ""}`}
+            onClick={() => onStyleChange({ italic: !currentItalic })}
+            disabled={!hasSelection}
+            title="斜体"
+            aria-label="斜体"
+          >
+            <TextStyleIcon kind="italic" className="text-style-icon" />
+          </button>
+          <button
+            type="button"
+            className={`tool-ghost toolbar-btn icon-square-btn ${currentUnderline ? "active" : ""}`}
             onClick={() => onStyleChange({ underline: !currentUnderline })}
             disabled={!hasSelection}
-            title="Underline"
+            title="下划线"
+            aria-label="下划线"
           >
-            U
+            <TextStyleIcon kind="underline" className="text-style-icon" />
           </button>
           <button
             type="button"
-            className={`tool-ghost toolbar-btn ${currentAlign === "left" ? "active" : ""}`}
+            className={`tool-ghost toolbar-btn icon-square-btn ${currentStrikeThrough ? "active" : ""}`}
+            onClick={() => onStyleChange({ strikeThrough: !currentStrikeThrough })}
+            disabled={!hasSelection}
+            title="删除线"
+            aria-label="删除线"
+          >
+            <TextStyleIcon kind="strike-through" className="text-style-icon" />
+          </button>
+          <button
+            type="button"
+            className={`tool-ghost toolbar-btn icon-square-btn ${currentAlign === "left" ? "active" : ""}`}
             onClick={() => onStyleChange({ align: "left" })}
             disabled={!hasSelection}
             title="左对齐"
             aria-label="左对齐"
           >
-            左
+            <TextStyleIcon kind="align-left" className="text-style-icon" />
           </button>
           <button
             type="button"
-            className={`tool-ghost toolbar-btn ${currentAlign === "center" ? "active" : ""}`}
+            className={`tool-ghost toolbar-btn icon-square-btn ${currentAlign === "center" ? "active" : ""}`}
             onClick={() => onStyleChange({ align: "center" })}
             disabled={!hasSelection}
             title="居中对齐"
             aria-label="居中对齐"
           >
-            中
+            <TextStyleIcon kind="align-center" className="text-style-icon" />
           </button>
           <button
             type="button"
-            className={`tool-ghost toolbar-btn ${currentAlign === "right" ? "active" : ""}`}
+            className={`tool-ghost toolbar-btn icon-square-btn ${currentAlign === "right" ? "active" : ""}`}
             onClick={() => onStyleChange({ align: "right" })}
             disabled={!hasSelection}
             title="右对齐"
             aria-label="右对齐"
           >
-            右
+            <TextStyleIcon kind="align-right" className="text-style-icon" />
           </button>
           <button
             type="button"
@@ -496,10 +547,9 @@ export function CanvasStage({ systemFonts }: CanvasStageProps) {
             title={currentWrapMode === "auto" ? "Auto wrap enabled" : "Single-line transform"}
             aria-label="Toggle wrap mode"
           >
-            ↵
+            换行
           </button>
-          <button
-            type="button"
+          <button type="button"
             className="tool-ghost toolbar-btn"
             onClick={() => rotateSelection(-90)}
             disabled={!hasSelection}
@@ -539,10 +589,10 @@ export function CanvasStage({ systemFonts }: CanvasStageProps) {
               {xTicks.map((tick) => (
                 <div
                   key={`x-${tick}`}
-                  className={`tick ${tick % 10 === 0 ? "major" : "minor"}`}
+                  className={`tick ${isMajorRulerTick(tick) ? "major" : "minor"}`}
                   style={{ left: tick * mmToPx }}
                 >
-                  {tick % 10 === 0 ? <span>{tick}</span> : null}
+                  {shouldShowRulerLabel(tick, labelSize.widthMm) ? <span>{tick}</span> : null}
                 </div>
               ))}
             </div>
@@ -551,10 +601,10 @@ export function CanvasStage({ systemFonts }: CanvasStageProps) {
               {yTicks.map((tick) => (
                 <div
                   key={`y-${tick}`}
-                  className={`tick ${tick % 10 === 0 ? "major" : "minor"}`}
+                  className={`tick ${isMajorRulerTick(tick) ? "major" : "minor"}`}
                   style={{ top: tick * mmToPx }}
                 >
-                  {tick % 10 === 0 ? <span>{tick}</span> : null}
+                  {shouldShowRulerLabel(tick, labelSize.heightMm) ? <span>{tick}</span> : null}
                 </div>
               ))}
             </div>
@@ -568,7 +618,12 @@ export function CanvasStage({ systemFonts }: CanvasStageProps) {
                 const isAutoWrap = element.textStyle.wrapMode !== "singleLine";
                 const noWrapScaleX =
                   element.type === "text" && !isAutoWrap
-                    ? computeSingleLineScaleX(element, preview, mmToPx)
+                    ? computeSingleLineScaleX({
+                        text: preview,
+                        textStyle: element.textStyle,
+                        widthMm: element.widthMm,
+                        mmToPx,
+                      })
                     : 1;
 
                 return (
@@ -586,35 +641,70 @@ export function CanvasStage({ systemFonts }: CanvasStageProps) {
                     onDoubleClick={(event) => startEditing(event, element)}
                   >
                     {isEditing ? (
-                      <input
-                        autoFocus
-                        className="inline-editor"
-                        value={editing.value}
-                        onMouseDown={(event) => event.stopPropagation()}
-                        style={{
-                          fontFamily: element.textStyle.fontFamily,
-                          fontSize: `${Math.max(1, element.textStyle.fontSize * mmToPx)}px`,
-                          fontWeight: element.textStyle.fontWeight,
-                          fontStyle: element.textStyle.italic ? "italic" : "normal",
-                          textDecoration: element.textStyle.underline ? "underline" : "none",
-                          textAlign: element.textStyle.align,
-                          color: element.textStyle.color,
-                          letterSpacing: `${element.textStyle.letterSpacing * mmToPx}px`,
-                          lineHeight: element.textStyle.lineHeight,
-                        }}
-                        onChange={(event) =>
-                          setEditing((current) =>
-            current
-                              ? {
-                                  ...current,
-                                  value: event.target.value,
-                                }
-                              : current
-                          )
-                        }
-                        onBlur={commitEditing}
-                        onKeyDown={onInputKeyDown}
-                      />
+                      element.type === "text" ? (
+                        <textarea
+                          autoFocus
+                          className="inline-editor inline-editor-multiline"
+                          value={editing.value}
+                          rows={3}
+                          onMouseDown={(event) => event.stopPropagation()}
+                          style={{
+                            fontFamily: element.textStyle.fontFamily,
+                            fontSize: `${Math.max(1, element.textStyle.fontSize * mmToPx)}px`,
+                            fontWeight: element.textStyle.fontWeight,
+                            fontStyle: element.textStyle.italic ? "italic" : "normal",
+                            textDecoration: buildTextDecoration(element.textStyle),
+                            textAlign: element.textStyle.align,
+                            color: element.textStyle.color,
+                            letterSpacing: `${element.textStyle.letterSpacing * mmToPx}px`,
+                            lineHeight: element.textStyle.lineHeight,
+                          }}
+                          onChange={(event) =>
+                            setEditing((current) =>
+                              current
+                                ? {
+                                    ...current,
+                                    value: event.target.value,
+                                  }
+                                : current
+                            )
+                          }
+                          onBlur={commitEditing}
+                          onKeyDown={onTextareaKeyDown}
+                          onFocus={selectAllOnFocus}
+                        />
+                      ) : (
+                        <input
+                          autoFocus
+                          className="inline-editor"
+                          value={editing.value}
+                          onMouseDown={(event) => event.stopPropagation()}
+                          style={{
+                            fontFamily: element.textStyle.fontFamily,
+                            fontSize: `${Math.max(1, element.textStyle.fontSize * mmToPx)}px`,
+                            fontWeight: element.textStyle.fontWeight,
+                            fontStyle: element.textStyle.italic ? "italic" : "normal",
+                            textDecoration: buildTextDecoration(element.textStyle),
+                            textAlign: element.textStyle.align,
+                            color: element.textStyle.color,
+                            letterSpacing: `${element.textStyle.letterSpacing * mmToPx}px`,
+                            lineHeight: element.textStyle.lineHeight,
+                          }}
+                          onChange={(event) =>
+                            setEditing((current) =>
+                              current
+                                ? {
+                                    ...current,
+                                    value: event.target.value,
+                                  }
+                                : current
+                            )
+                          }
+                          onBlur={commitEditing}
+                          onKeyDown={onInputKeyDown}
+                          onFocus={selectAllOnFocus}
+                        />
+                      )
                     ) : element.type === "text" ? (
                       <div
                         className="element-content"
@@ -623,7 +713,7 @@ export function CanvasStage({ systemFonts }: CanvasStageProps) {
                           fontSize: `${Math.max(1, element.textStyle.fontSize * mmToPx)}px`,
                           fontWeight: element.textStyle.fontWeight,
                           fontStyle: element.textStyle.italic ? "italic" : "normal",
-                          textDecoration: element.textStyle.underline ? "underline" : "none",
+                          textDecoration: buildTextDecoration(element.textStyle),
                           textAlign: element.textStyle.align,
                           color: element.textStyle.color,
                           letterSpacing: `${element.textStyle.letterSpacing * mmToPx}px`,
@@ -631,7 +721,7 @@ export function CanvasStage({ systemFonts }: CanvasStageProps) {
                           whiteSpace: isAutoWrap ? "pre-wrap" : "nowrap",
                           overflowWrap: isAutoWrap ? "anywhere" : "normal",
                           wordBreak: isAutoWrap ? "break-word" : "normal",
-                          textOverflow: isAutoWrap ? "clip" : "ellipsis",
+                          textOverflow: "clip",
                           transform: !isAutoWrap ? `scaleX(${noWrapScaleX})` : undefined,
                           transformOrigin: !isAutoWrap
                             ? `${getAlignTransformOrigin(element.textStyle.align)} center`
@@ -641,12 +731,54 @@ export function CanvasStage({ systemFonts }: CanvasStageProps) {
                         {preview}
                       </div>
                     ) : element.type === "barcode" ? (
-                      <div className="barcode-preview">
-                        <BarcodePreview
-                          value={preview || "123456789"}
-                          symbology={element.barcode.symbology}
-                          className="barcode-svg"
-                        />
+                      <div
+                        className={`barcode-preview ${
+                          element.barcode.textPosition === "none" ? "is-text-hidden" : "is-text-visible"
+                        }`}
+                        style={
+                          {
+                            "--barcode-gap": `${Math.max(1, element.barcode.textGap * mmToPx)}px`,
+                          } as CSSProperties
+                        }
+                      >
+                        {element.barcode.textPosition === "top" ? (
+                          <span
+                            className="barcode-preview-text"
+                            style={buildBarcodeTextStyle(element.textStyle, {
+                              mmToPx,
+                              heightMm: element.heightMm,
+                              widthMm: element.widthMm,
+                              text: preview || "123456789",
+                              minBarcodeHeightMm: element.barcode.minHeight,
+                              textGapMm: element.barcode.textGap,
+                            })}
+                          >
+                            {preview || "123456789"}
+                          </span>
+                        ) : null}
+                        <div className="barcode-preview-core">
+                          <BarcodePreview
+                            value={preview || "123456789"}
+                            symbology={element.barcode.symbology}
+                            className="barcode-svg"
+                            showText={false}
+                          />
+                        </div>
+                        {element.barcode.textPosition === "bottom" ? (
+                          <span
+                            className="barcode-preview-text"
+                            style={buildBarcodeTextStyle(element.textStyle, {
+                              mmToPx,
+                              heightMm: element.heightMm,
+                              widthMm: element.widthMm,
+                              text: preview || "123456789",
+                              minBarcodeHeightMm: element.barcode.minHeight,
+                              textGapMm: element.barcode.textGap,
+                            })}
+                          >
+                            {preview || "123456789"}
+                          </span>
+                        ) : null}
                       </div>
                     ) : element.type === "qrcode" ? (
                       <div className="qrcode-preview">
@@ -671,22 +803,79 @@ export function CanvasStage({ systemFonts }: CanvasStageProps) {
                         </div>
                       )
                     ) : element.type === "shape" ? (
-                      <div className="shape-preview" style={{ borderColor: element.textStyle.color }}>
-                        <span className="shape-preview-text">{preview || "矩形"}</span>
-                      </div>
+                      (() => {
+                        const presetId =
+                          element.binding.mode === "fixed"
+                            ? readShapePresetIdFromBinding(element.binding.fixedValue)
+                            : null;
+                        if (presetId) {
+                          return (
+                            <div
+                              className="shape-preview shape-preview-preset"
+                              style={{ borderColor: element.textStyle.color }}
+                            >
+                              <PresetGlyph
+                                kind="shape"
+                                presetId={presetId}
+                                className="shape-preset-svg"
+                                color={element.textStyle.color}
+                              />
+                            </div>
+                          );
+                        }
+                        if (preview.startsWith("data:image/")) {
+                          return (
+                            <div className="shape-preview shape-preview-has-image">
+                              <img src={preview} alt={element.name} className="shape-preview-img" draggable={false} />
+                            </div>
+                          );
+                        }
+                        return (
+                          <div className="shape-preview" style={{ borderColor: element.textStyle.color }}>
+                            <span className="shape-preview-text">{preview || "Shape"}</span>
+                          </div>
+                        );
+                      })()
                     ) : (
-                      <div className="icon-preview">
-                        <span
-                          className="icon-preview-glyph"
-                          style={{
-                            fontFamily: element.textStyle.fontFamily,
-                            color: element.textStyle.color,
-                            fontWeight: element.textStyle.fontWeight,
-                          }}
-                        >
-                          {preview || "@"}
-                        </span>
-                      </div>
+                      (() => {
+                        const presetId =
+                          element.binding.mode === "fixed"
+                            ? readIconPresetIdFromBinding(element.binding.fixedValue)
+                            : null;
+                        if (presetId) {
+                          return (
+                            <div className="icon-preview icon-preview-preset">
+                              <PresetGlyph
+                                kind="icon"
+                                presetId={presetId}
+                                className="icon-preset-svg"
+                                color={element.textStyle.color}
+                              />
+                            </div>
+                          );
+                        }
+                        if (preview.startsWith("data:image/")) {
+                          return (
+                            <div className="icon-preview icon-preview-has-image">
+                              <img src={preview} alt={element.name} className="icon-preview-img" draggable={false} />
+                            </div>
+                          );
+                        }
+                        return (
+                          <div className="icon-preview">
+                            <span
+                              className="icon-preview-glyph"
+                              style={{
+                                fontFamily: element.textStyle.fontFamily,
+                                color: element.textStyle.color,
+                                fontWeight: element.textStyle.fontWeight,
+                              }}
+                            >
+                              {preview || "@"}
+                            </span>
+                          </div>
+                        );
+                      })()
                     )}
 
                     {showResizeHandles
@@ -735,50 +924,6 @@ function normalizeRotation(rotation: number): number {
   }
   const value = rotation % 360;
   return value < 0 ? value + 360 : value;
-}
-
-function buildTicks(lengthMm: number, step = 5): number[] {
-  const output: number[] = [0];
-  for (let value = step; value <= lengthMm; value += step) {
-    output.push(value);
-  }
-  return output;
-}
-
-function estimateSingleLineUnits(value: string): number {
-  const text = value.replace(/\r?\n/g, " ").trim();
-  if (!text) {
-    return 0;
-  }
-  let units = 0;
-  for (const char of text) {
-    if (char === " ") {
-      units += 0.35;
-      continue;
-    }
-    units += char.charCodeAt(0) <= 0x7f ? 0.55 : 1;
-  }
-  return units;
-}
-
-function computeSingleLineScaleX(
-  element: Extract<EditorElement, { type: "text" }>,
-  value: string,
-  mmToPx: number
-): number {
-  const declaredScale = clamp(element.textStyle.widthScale ?? 1, 0.2, 2);
-  const units = estimateSingleLineUnits(value);
-  if (units <= 0) {
-    return declaredScale;
-  }
-
-  const fontPx = Math.max(1, element.textStyle.fontSize * mmToPx);
-  const letterSpacingPx = Math.max(0, element.textStyle.letterSpacing * mmToPx);
-  const estimatedWidthPx = units * fontPx * 0.62 + Math.max(0, units - 1) * letterSpacingPx;
-  const availableWidthPx = Math.max(8, element.widthMm * mmToPx - 6);
-  const fitScale = estimatedWidthPx > availableWidthPx ? availableWidthPx / estimatedWidthPx : 1;
-
-  return clamp(declaredScale * fitScale, 0.2, 2);
 }
 
 function getAlignTransformOrigin(align: TextStyle["align"]): "left" | "center" | "right" {

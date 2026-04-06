@@ -3,7 +3,9 @@ import type { CSSProperties } from "react";
 import { BarcodePreview } from "../editor/BarcodePreview";
 import { QrcodePreview } from "../editor/QrcodePreview";
 import { resolveBindingValue } from "../editor/core/binding";
+import { buildTextDecoration } from "../editor/core/text-style";
 import type { TemplateSnapshot } from "../editor/core/template-snapshot";
+import { PresetGlyph, readIconPresetIdFromBinding, readShapePresetIdFromBinding } from "../editor/core/visual-presets";
 
 type RecentLabelThumbnailProps = {
   snapshot: TemplateSnapshot;
@@ -50,7 +52,7 @@ export function RecentLabelThumbnail({ snapshot }: RecentLabelThumbnailProps) {
                     fontSize: `${Math.max(8, element.textStyle.fontSize * 1.2)}px`,
                     fontWeight: element.textStyle.fontWeight,
                     fontStyle: element.textStyle.italic ? "italic" : "normal",
-                    textDecoration: element.textStyle.underline ? "underline" : "none",
+                    textDecoration: buildTextDecoration(element.textStyle),
                     textAlign: element.textStyle.align,
                     letterSpacing: `${Math.max(0, element.textStyle.letterSpacing)}px`,
                     lineHeight: element.textStyle.lineHeight,
@@ -96,6 +98,30 @@ export function RecentLabelThumbnail({ snapshot }: RecentLabelThumbnailProps) {
           }
 
           if (element.type === "shape") {
+            const presetId =
+              element.binding.mode === "fixed" ? readShapePresetIdFromBinding(element.binding.fixedValue) : null;
+            if (presetId) {
+              return (
+                <div
+                  key={element.id}
+                  className="home-thumb-element home-thumb-shape home-thumb-shape-preset"
+                  style={{
+                    ...style,
+                    borderColor: element.textStyle.color,
+                    color: element.textStyle.color,
+                  }}
+                >
+                  <PresetGlyph kind="shape" presetId={presetId} className="home-thumb-preset-svg" />
+                </div>
+              );
+            }
+            if (value.startsWith("data:image/")) {
+              return (
+                <div key={element.id} className="home-thumb-element home-thumb-image" style={style}>
+                  <img src={value} alt={element.name} draggable={false} />
+                </div>
+              );
+            }
             return (
               <div
                 key={element.id}
@@ -106,6 +132,30 @@ export function RecentLabelThumbnail({ snapshot }: RecentLabelThumbnailProps) {
                 }}
               >
                 <span>{value || "形状"}</span>
+              </div>
+            );
+          }
+
+          const iconPresetId =
+            element.binding.mode === "fixed" ? readIconPresetIdFromBinding(element.binding.fixedValue) : null;
+          if (iconPresetId) {
+            return (
+              <div
+                key={element.id}
+                className="home-thumb-element home-thumb-icon home-thumb-icon-preset"
+                style={{
+                  ...style,
+                  color: element.textStyle.color,
+                }}
+              >
+                <PresetGlyph kind="icon" presetId={iconPresetId} className="home-thumb-preset-svg" />
+              </div>
+            );
+          }
+          if (value.startsWith("data:image/")) {
+            return (
+              <div key={element.id} className="home-thumb-element home-thumb-image" style={style}>
+                <img src={value} alt={element.name} draggable={false} />
               </div>
             );
           }

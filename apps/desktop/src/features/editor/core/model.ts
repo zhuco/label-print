@@ -18,6 +18,7 @@ const DEFAULT_TEXT_STYLE: TextStyle = {
   fontWeight: 400,
   italic: false,
   underline: false,
+  strikeThrough: false,
   align: "left",
   color: "#101828",
   letterSpacing: 0,

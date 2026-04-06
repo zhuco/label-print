@@ -5,6 +5,7 @@ import { BARCODE_SYMBOLOGY_OPTIONS, getDefaultBarcodeValue } from "./core/barcod
 import { resolveBindingValue } from "./core/binding";
 import { DEFAULT_FONT_OPTIONS, type FontOption, withCurrentFont } from "./core/font-options";
 import type { BarcodeSymbology, ContentBinding, EditorElement } from "./core/types";
+import { TextStyleIcon } from "./TextStyleIcon";
 import { selectActiveDocument, useEditorStore } from "./editor.store";
 
 type RightInspectorProps = {
@@ -34,11 +35,11 @@ export function RightInspector({ systemFonts }: RightInspectorProps) {
   );
 
   if (selectedCount === 0) {
-    return <p className="muted">请选择对象后编辑参数。</p>;
+    return <p className="muted">请先选择对象后再编辑参数。</p>;
   }
 
   if (!selectedElement) {
-    return <p className="muted">已选中 {selectedCount} 项，可使用左侧工具栏进行对齐。</p>;
+    return <p className="muted">已选中 {selectedCount} 个对象，可使用左侧工具栏进行批量对齐。</p>;
   }
 
   const previewRow = rows[0] ?? {};
@@ -95,9 +96,15 @@ export function RightInspector({ systemFonts }: RightInspectorProps) {
     event.target.value = "";
   };
 
+  const isTextOrBarcode = selectedElement.type === "text" || selectedElement.type === "barcode";
+  const isBold = selectedElement.textStyle.fontWeight >= 700;
+  const isItalic = selectedElement.textStyle.italic;
+  const isUnderline = selectedElement.textStyle.underline;
+  const isStrikeThrough = selectedElement.textStyle.strikeThrough ?? false;
+
   return (
     <div className="inspector">
-      <p className="muted">当前对象: {selectedElement.name}</p>
+      <p className="muted">当前对象：{selectedElement.name}</p>
 
       <section>
         <h3>基础参数</h3>
@@ -184,108 +191,134 @@ export function RightInspector({ systemFonts }: RightInspectorProps) {
             <input
               value={selectedElement.binding.expression ?? ""}
               onChange={(event) => updateSelectedBinding({ expression: event.target.value })}
-              placeholder="例如: ${sku}-${price}"
+              placeholder="例如：{sku}-${price}"
             />
           </label>
         ) : null}
 
-        <p className="preview-value">预览值: {previewValue || "(空)"}</p>
+        <p className="preview-value">预览值：{previewValue || "(空)"}</p>
       </section>
 
-      <section>
-        <h3>高级参数</h3>
-        <div className="form-grid">
-          <label>
-            字体
-            <select
-              value={selectedElement.textStyle.fontFamily}
-              onChange={(event) => updateSelectedTextStyle({ fontFamily: event.target.value })}
-            >
-              {fontOptions.map((font) => (
-                <option key={font.value} value={font.value}>
-                  {font.label}
-                </option>
-              ))}
-            </select>
-          </label>
-          <NumericInput
-            label="字号"
-            value={selectedElement.textStyle.fontSize}
-            min={1}
-            onChange={(value) => updateSelectedTextStyle({ fontSize: value })}
-          />
-          <NumericInput
-            label="字重"
-            value={selectedElement.textStyle.fontWeight}
-            min={100}
-            max={900}
-            step={100}
-            onChange={(value) => updateSelectedTextStyle({ fontWeight: value })}
-          />
-          <NumericInput
-            label="字距"
-            value={selectedElement.textStyle.letterSpacing}
-            step={0.1}
-            onChange={(value) => updateSelectedTextStyle({ letterSpacing: value })}
-          />
-          <NumericInput
-            label="行高"
-            value={selectedElement.textStyle.lineHeight}
-            min={0.5}
-            step={0.1}
-            onChange={(value) => updateSelectedTextStyle({ lineHeight: value })}
-          />
-          <label>
-            对齐
-            <select
-              value={selectedElement.textStyle.align}
-              onChange={(event) =>
-                updateSelectedTextStyle({
-                  align: event.target.value as EditorElement["textStyle"]["align"],
-                })
-              }
-            >
-              <option value="left">左对齐</option>
-              <option value="center">居中</option>
-              <option value="right">右对齐</option>
-            </select>
-          </label>
-          <label>
-            颜色
-            <input
-              type="color"
-              value={selectedElement.textStyle.color}
-              onChange={(event) => updateSelectedTextStyle({ color: event.target.value })}
-            />
-          </label>
-        </div>
+      {isTextOrBarcode ? (
+        <section>
+          <h3>{selectedElement.type === "barcode" ? "文本参数（条码数字）" : "文本参数"}</h3>
+          <div className="form-grid text-param-grid">
+            <label className="compact-control">
+              <span className="visually-hidden">字体</span>
+              <select
+                value={selectedElement.textStyle.fontFamily}
+                aria-label="字体"
+                title="字体"
+                onChange={(event) => updateSelectedTextStyle({ fontFamily: event.target.value })}
+              >
+                {fontOptions.map((font) => (
+                  <option key={font.value} value={font.value}>
+                    {font.label}
+                  </option>
+                ))}
+              </select>
+            </label>
+            <label className="compact-control">
+              <span className="visually-hidden">字号</span>
+              <input
+                type="number"
+                min={1}
+                value={Number.isFinite(selectedElement.textStyle.fontSize) ? selectedElement.textStyle.fontSize : 1}
+                aria-label="字号"
+                title="字号"
+                onChange={(event) => {
+                  const parsed = Number(event.target.value);
+                  if (Number.isFinite(parsed)) {
+                    updateSelectedTextStyle({ fontSize: parsed });
+                  }
+                }}
+              />
+            </label>
+          </div>
 
-        <div className="inline-actions">
-          <label className="check-item">
-            <input
-              type="checkbox"
-              checked={selectedElement.textStyle.italic}
-              onChange={(event) => updateSelectedTextStyle({ italic: event.target.checked })}
-            />
-            斜体
-          </label>
-          <label className="check-item">
-            <input
-              type="checkbox"
-              checked={selectedElement.textStyle.underline}
-              onChange={(event) => updateSelectedTextStyle({ underline: event.target.checked })}
-            />
-            下划线
-          </label>
-        </div>
-      </section>
+          <div className="inline-actions text-style-toggle-row text-align-toggle-row">
+            <button
+              type="button"
+              className={`tool-ghost text-style-toggle icon-square-btn ${
+                selectedElement.textStyle.align === "left" ? "active" : ""
+              }`}
+              title="左对齐"
+              aria-label="左对齐"
+              onClick={() => updateSelectedTextStyle({ align: "left" as EditorElement["textStyle"]["align"] })}
+            >
+              <TextStyleIcon kind="align-left" className="text-style-icon" />
+            </button>
+            <button
+              type="button"
+              className={`tool-ghost text-style-toggle icon-square-btn ${
+                selectedElement.textStyle.align === "center" ? "active" : ""
+              }`}
+              title="居中对齐"
+              aria-label="居中对齐"
+              onClick={() => updateSelectedTextStyle({ align: "center" as EditorElement["textStyle"]["align"] })}
+            >
+              <TextStyleIcon kind="align-center" className="text-style-icon" />
+            </button>
+            <button
+              type="button"
+              className={`tool-ghost text-style-toggle icon-square-btn ${
+                selectedElement.textStyle.align === "right" ? "active" : ""
+              }`}
+              title="右对齐"
+              aria-label="右对齐"
+              onClick={() => updateSelectedTextStyle({ align: "right" as EditorElement["textStyle"]["align"] })}
+            >
+              <TextStyleIcon kind="align-right" className="text-style-icon" />
+            </button>
+          </div>
+
+          <div className="inline-actions text-style-toggle-row">
+            <button
+              type="button"
+              className={`tool-ghost text-style-toggle icon-square-btn ${isBold ? "active" : ""}`}
+              title="加粗"
+              aria-label="加粗"
+              onClick={() => updateSelectedTextStyle({ fontWeight: isBold ? 400 : 700 })}
+            >
+              <TextStyleIcon kind="bold" className="text-style-icon" />
+            </button>
+            <button
+              type="button"
+              className={`tool-ghost text-style-toggle icon-square-btn ${isItalic ? "active" : ""}`}
+              title="斜体"
+              aria-label="斜体"
+              onClick={() => updateSelectedTextStyle({ italic: !isItalic })}
+            >
+              <TextStyleIcon kind="italic" className="text-style-icon" />
+            </button>
+            <button
+              type="button"
+              className={`tool-ghost text-style-toggle icon-square-btn ${isUnderline ? "active" : ""}`}
+              title="下划线"
+              aria-label="下划线"
+              onClick={() => updateSelectedTextStyle({ underline: !isUnderline })}
+            >
+              <TextStyleIcon kind="underline" className="text-style-icon" />
+            </button>
+            <button
+              type="button"
+              className={`tool-ghost text-style-toggle icon-square-btn ${isStrikeThrough ? "active" : ""}`}
+              title="删除线"
+              aria-label="删除线"
+              onClick={() => updateSelectedTextStyle({ strikeThrough: !isStrikeThrough })}
+            >
+              <TextStyleIcon kind="strike-through" className="text-style-icon" />
+            </button>
+          </div>
+        </section>
+      ) : null}
 
       {selectedElement.type === "image" ? (
         <section>
-          <h3>Image Asset</h3>
+          <h3>图片资源</h3>
           <div className="inline-actions">
             <button type="button" className="tool-ghost" onClick={() => imageInputRef.current?.click()}>
-              Select image
+              选择图片
             </button>
             <button
               type="button"
@@ -297,7 +330,7 @@ export function RightInspector({ systemFonts }: RightInspectorProps) {
                 })
               }
             >
-              Clear
+              清空
             </button>
           </div>
           <input
@@ -307,7 +340,7 @@ export function RightInspector({ systemFonts }: RightInspectorProps) {
             onChange={onImageFileChange}
             style={{ display: "none" }}
           />
-          <p className="muted">{hasEmbeddedImage ? "Embedded image ready." : "No embedded image."}</p>
+          <p className="muted">{hasEmbeddedImage ? "已嵌入图片。" : "尚未嵌入图片。"}</p>
         </section>
       ) : null}
 

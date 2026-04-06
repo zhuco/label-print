@@ -1,11 +1,14 @@
-import { useMemo } from "react";
+import { useMemo, type ChangeEvent, type KeyboardEvent } from "react";
 
 import type { TemplateSnapshot } from "../editor/core/template-snapshot";
 import { RecentLabelThumbnail } from "./RecentLabelThumbnail";
 
+const HOME_SEARCH_MAX_LENGTH = 40;
+
 export type HomeRecentItem = {
   id: string;
   fileName: string;
+  filePath?: string | null;
   saved: boolean;
   openedAt: number;
   snapshot: TemplateSnapshot;
@@ -28,7 +31,7 @@ export function HomePage({
   onOpenLabel,
   onOpenRecent,
 }: HomePageProps) {
-  const formatter = useMemo(
+  const openedFormatter = useMemo(
     () =>
       new Intl.DateTimeFormat("zh-CN", {
         month: "2-digit",
@@ -38,6 +41,37 @@ export function HomePage({
       }),
     []
   );
+
+  const usageDateFormatter = useMemo(
+    () =>
+      new Intl.DateTimeFormat("zh-CN", {
+        year: "numeric",
+        month: "2-digit",
+        day: "2-digit",
+      }),
+    []
+  );
+
+  const onSearchInputChange = (event: ChangeEvent<HTMLInputElement>) => {
+    const next = event.target.value.slice(0, HOME_SEARCH_MAX_LENGTH);
+    onSearchKeywordChange(next);
+  };
+
+  const onSearchSubmit = () => {
+    onSearchKeywordChange(searchKeyword.trim());
+  };
+
+  const onSearchKeyDown = (event: KeyboardEvent<HTMLInputElement>) => {
+    if (event.key !== "Enter") {
+      return;
+    }
+    event.preventDefault();
+    onSearchSubmit();
+  };
+
+  const onSearchClear = () => {
+    onSearchKeywordChange("");
+  };
 
   return (
     <section className="home-page">
@@ -52,18 +86,31 @@ export function HomePage({
         </div>
         <label className="home-search">
           <span>搜索文件名</span>
-          <input
-            value={searchKeyword}
-            onChange={(event) => onSearchKeywordChange(event.target.value)}
-            placeholder="输入文件名或标签名"
-          />
+          <div className="home-search-row">
+            <input
+              className="home-search-input"
+              value={searchKeyword}
+              maxLength={HOME_SEARCH_MAX_LENGTH}
+              onChange={onSearchInputChange}
+              onKeyDown={onSearchKeyDown}
+              placeholder="输入文件名、标签名或使用日期"
+            />
+            {searchKeyword.length > 0 ? (
+              <button type="button" className="home-search-clear" onClick={onSearchClear}>
+                清除
+              </button>
+            ) : null}
+            <button type="button" className="home-search-submit" onClick={onSearchSubmit}>
+              搜索
+            </button>
+          </div>
         </label>
       </section>
 
       <section className="home-recent-panel">
         <header className="home-recent-header">
           <h3>最近使用</h3>
-          <p className="muted">显示最近打开的标签，支持按文件名搜索</p>
+          <p className="muted">显示最近打开的标签，支持按文件名和日期搜索</p>
         </header>
 
         {recentItems.length === 0 ? (
@@ -83,7 +130,8 @@ export function HomePage({
                 <div className="home-recent-meta">
                   <h4>{item.fileName}</h4>
                   <p>{item.snapshot.title}</p>
-                  <p className="muted">最近打开: {formatter.format(item.openedAt)}</p>
+                  <p className="muted">使用日期: {usageDateFormatter.format(item.openedAt)}</p>
+                  <p className="muted">最近打开: {openedFormatter.format(item.openedAt)}</p>
                 </div>
               </button>
             ))}

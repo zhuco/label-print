@@ -48,6 +48,7 @@ export type TextStyle = {
   fontWeight: number;
   italic: boolean;
   underline: boolean;
+  strikeThrough?: boolean;
   align: "left" | "center" | "right";
   color: string;
   letterSpacing: number;

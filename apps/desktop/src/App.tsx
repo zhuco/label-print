@@ -1,9 +1,10 @@
-﻿import { useEffect, useMemo, useRef, useState, type ChangeEvent, type MouseEvent as ReactMouseEvent } from "react";
+﻿import { useCallback, useEffect, useMemo, useRef, useState, type ChangeEvent, type MouseEvent as ReactMouseEvent } from "react";
 
+import appLogo from "./assets/icons/logo.png";
 import { useDataImportStore } from "./features/data-import/data-import.store";
 import { EditorPage } from "./features/editor/EditorPage";
 import { NewLabelModal } from "./features/editor/NewLabelModal";
-import { PrintSubmitModal } from "./features/editor/PrintSubmitModal";
+import { type DirectPrintSubmitInput, PrintSubmitModal } from "./features/editor/PrintSubmitModal";
 import { buildFontOptions, DEFAULT_FONT_OPTIONS, type FontOption } from "./features/editor/core/font-options";
 import {
   getTemplateFileBaseName,
@@ -23,8 +24,9 @@ import type { EditorElement, LabelSize } from "./features/editor/core/types";
 import { type Calibration, type EditorDocument, selectActiveDocument, useEditorStore } from "./features/editor/editor.store";
 import { HomePage, type HomeRecentItem } from "./features/home/HomePage";
 import { listSystemFonts } from "./services/ipc/fonts";
-import { submitPrintTask } from "./services/ipc/print";
-import { type TemplateDto, listTemplates, saveTemplate } from "./services/ipc/template";
+import { consumeLaunchFiles, subscribeLaunchFiles, type LaunchFilePayload } from "./services/ipc/launch-files";
+import { getCachedSystemPrinters, listSystemPrinters, submitDirectPrint } from "./services/ipc/print";
+import { type TemplateDto, listTemplates, pickTemplateFile, saveTemplate, saveTemplateFile } from "./services/ipc/template";
 import {
   closeWindow,
   minimizeWindow,
@@ -32,10 +34,11 @@ import {
   toggleMaximizeWindow,
 } from "./services/ipc/window-controls";
 
-const DEFAULT_PRINTERS = ["Zebra-01", "Brother MFC-7360", "TSC TTP-244"];
 const LABEL_MIN_SIZE_MM = 10;
+const DEFAULT_NEW_LABEL_SIZE: LabelSize = { widthMm: 40, heightMm: 30 };
 const HOME_RECENT_STORAGE_KEY = "label-print.recent-opened";
 const HOME_RECENT_LIMIT = 24;
+const LAST_NEW_LABEL_SIZE_STORAGE_KEY = "label-print.last-new-label-size";
 const TITLEBAR_IGNORE_SELECTOR = "button, input, textarea, select, a, [data-no-titlebar-action]";
 
 type LocalFontMeta = {
@@ -67,10 +70,22 @@ type SaveFilePickerWindow = Window & {
 };
 
 type SaveTemplateResult = {
-  mode: "picker" | "download" | "direct";
+  mode: "picker" | "download" | "direct" | "path";
   fileName: string;
+  filePath?: string;
   handle?: SaveFileHandle;
 };
+
+type CloseConfirmRequest =
+  | {
+      kind: "tab";
+      documentId: string;
+      documentTitle: string;
+    }
+  | {
+      kind: "app";
+      unsavedCount: number;
+    };
 
 function resolveTargetElement(target: EventTarget | null): Element | null {
   if (target instanceof Element) {
@@ -90,6 +105,17 @@ function shouldIgnoreTitlebarAction(target: EventTarget | null): boolean {
   return Boolean(element.closest(TITLEBAR_IGNORE_SELECTOR));
 }
 
+function isEditableShortcutTarget(target: EventTarget | null): boolean {
+  const element = resolveTargetElement(target);
+  if (!element) {
+    return false;
+  }
+  if (element instanceof HTMLInputElement || element instanceof HTMLTextAreaElement || element instanceof HTMLSelectElement) {
+    return true;
+  }
+  return element instanceof HTMLElement ? element.isContentEditable : false;
+}
+
 function cloneSnapshot(snapshot: TemplateSnapshot): TemplateSnapshot {
   return {
     ...snapshot,
@@ -97,6 +123,10 @@ function cloneSnapshot(snapshot: TemplateSnapshot): TemplateSnapshot {
     elements: cloneElements(snapshot.elements),
     calibration: { ...snapshot.calibration },
   };
+}
+
+function toSnapshotSignature(snapshot: TemplateSnapshot): string {
+  return JSON.stringify(snapshot);
 }
 
 function parseRecentOpenedItems(raw: string): HomeRecentItem[] {
@@ -125,6 +155,7 @@ function parseRecentOpenedItems(raw: string): HomeRecentItem[] {
               ? row.id
               : `recent-${Date.now()}-${Math.random().toString(16).slice(2, 8)}`,
           fileName: row.fileName,
+          filePath: typeof row.filePath === "string" && row.filePath.trim().length > 0 ? row.filePath.trim() : null,
           saved: true,
           openedAt: Number(row.openedAt),
           snapshot: cloneSnapshot(snapshot),
@@ -157,6 +188,32 @@ function writeRecentOpenedItems(items: HomeRecentItem[]) {
   localStorage.setItem(HOME_RECENT_STORAGE_KEY, JSON.stringify(items.slice(0, HOME_RECENT_LIMIT)));
 }
 
+function readLastNewLabelSize(): LabelSize {
+  if (typeof localStorage === "undefined") {
+    return { ...DEFAULT_NEW_LABEL_SIZE };
+  }
+  const raw = localStorage.getItem(LAST_NEW_LABEL_SIZE_STORAGE_KEY);
+  if (!raw) {
+    return { ...DEFAULT_NEW_LABEL_SIZE };
+  }
+  try {
+    const parsed = JSON.parse(raw) as Partial<LabelSize>;
+    return {
+      widthMm: parsePositive(Number(parsed.widthMm), DEFAULT_NEW_LABEL_SIZE.widthMm),
+      heightMm: parsePositive(Number(parsed.heightMm), DEFAULT_NEW_LABEL_SIZE.heightMm),
+    };
+  } catch {
+    return { ...DEFAULT_NEW_LABEL_SIZE };
+  }
+}
+
+function writeLastNewLabelSize(size: LabelSize) {
+  if (typeof localStorage === "undefined") {
+    return;
+  }
+  localStorage.setItem(LAST_NEW_LABEL_SIZE_STORAGE_KEY, JSON.stringify(size));
+}
+
 function parsePositive(value: number, fallback: number): number {
   if (!Number.isFinite(value)) {
     return fallback;
@@ -168,8 +225,8 @@ function isInitialUntouchedDocument(document: EditorDocument): boolean {
   return (
     document.title === "新建标签1" &&
     document.filePath === null &&
-    document.labelSize.widthMm === 40 &&
-    document.labelSize.heightMm === 30 &&
+    document.labelSize.widthMm === DEFAULT_NEW_LABEL_SIZE.widthMm &&
+    document.labelSize.heightMm === DEFAULT_NEW_LABEL_SIZE.heightMm &&
     document.elements.length === 0 &&
     document.selectedIds.length === 0 &&
     document.undoStack.length === 0 &&
@@ -194,15 +251,123 @@ function normalizeRecentFileName(fileName: string, fallbackTitle: string): strin
 }
 
 function normalizeDocumentLookupKey(fileName: string): string {
-  return normalizeRecentFileName(fileName, fileName).trim().toLocaleLowerCase("zh-CN");
+  const trimmed = fileName.trim();
+  if (!trimmed) {
+    return "";
+  }
+  if (trimmed.includes("\\") || trimmed.includes("/") || isAbsoluteFilePath(trimmed)) {
+    return trimmed.replace(/\\/g, "/").toLocaleLowerCase("en-US");
+  }
+  return normalizeRecentFileName(trimmed, trimmed).trim().toLocaleLowerCase("zh-CN");
+}
+
+function isAbsoluteFilePath(value: string): boolean {
+  if (/^[a-zA-Z]:[\\/]/.test(value)) {
+    return true;
+  }
+  if (/^\\\\[^\\]/.test(value)) {
+    return true;
+  }
+  return value.startsWith("/");
+}
+
+function resolveKnownDocumentPath(filePath: string | null): string | null {
+  const normalized = filePath?.trim() || "";
+  if (!normalized || !isAbsoluteFilePath(normalized)) {
+    return null;
+  }
+  return normalized;
+}
+
+function buildRecentEntryLookupKey(fileName: string, filePath: string | null): string {
+  const knownPath = resolveKnownDocumentPath(filePath);
+  if (knownPath) {
+    return `path:${normalizeDocumentLookupKey(knownPath)}`;
+  }
+  return `name:${normalizeDocumentLookupKey(fileName)}`;
+}
+
+function padRecentDateUnit(value: number): string {
+  return value.toString().padStart(2, "0");
+}
+
+function buildRecentDateSearchTokens(openedAt: number): string[] {
+  if (!Number.isFinite(openedAt)) {
+    return [];
+  }
+  const date = new Date(openedAt);
+  if (Number.isNaN(date.getTime())) {
+    return [];
+  }
+
+  const year = date.getFullYear().toString();
+  const month = padRecentDateUnit(date.getMonth() + 1);
+  const day = padRecentDateUnit(date.getDate());
+
+  return [
+    `${year}-${month}-${day}`,
+    `${year}/${month}/${day}`,
+    `${year}${month}${day}`,
+    `${month}-${day}`,
+    `${month}/${day}`,
+    `${year}年${month}月${day}日`,
+  ];
 }
 
 function toChineseErrorMessage(error: unknown): string {
-  if (!(error instanceof Error)) {
-    return "未知错误";
-  }
+  const readObjectMessage = (value: unknown): string | null => {
+    if (!value || typeof value !== "object") {
+      return null;
+    }
+    const row = value as Record<string, unknown>;
+    const direct =
+      (typeof row.message === "string" && row.message.trim()) ||
+      (typeof row.error === "string" && row.error.trim()) ||
+      (typeof row.details === "string" && row.details.trim());
+    if (direct) {
+      return direct;
+    }
+    if (row.cause) {
+      const cause = row.cause;
+      if (typeof cause === "string" && cause.trim()) {
+        return cause.trim();
+      }
+      const nested = readObjectMessage(cause);
+      if (nested) {
+        return nested;
+      }
+    }
+    return null;
+  };
 
-  const rawMessage = error.message.trim();
+  const rawMessage = (() => {
+    if (typeof error === "string" && error.trim()) {
+      return error.trim();
+    }
+    if (error instanceof Error && error.message.trim()) {
+      return error.message.trim();
+    }
+    const objectMessage = readObjectMessage(error);
+    if (objectMessage) {
+      return objectMessage;
+    }
+    if (error !== null && error !== undefined) {
+      try {
+        const serialized = JSON.stringify(error);
+        if (serialized && serialized !== "{}") {
+          return serialized;
+        }
+      } catch {
+        // noop
+      }
+      const text = String(error).trim();
+      if (text && text !== "[object Object]") {
+        return text;
+      }
+    }
+    return "";
+  })();
+
   if (!rawMessage) {
     return "未知错误";
   }
@@ -222,6 +387,18 @@ function toChineseErrorMessage(error: unknown): string {
   }
   if (lower.includes("network")) {
     return "网络连接异常";
+  }
+  if (lower.includes("decode preview png failed")) {
+    return "预览图解析失败";
+  }
+  if (lower.includes("write exported pdf failed")) {
+    return "导出 PDF 失败（请检查文档目录权限）";
+  }
+  if (lower.includes("invalid label size for pdf export")) {
+    return "标签尺寸无效，无法导出 PDF";
+  }
+  if (lower.includes("invalid preview image")) {
+    return "预览图尺寸无效";
   }
   if (lower.includes("base64 decode")) {
     return "当前环境不支持 Base64 解码";
@@ -257,13 +434,34 @@ function toChineseErrorMessage(error: unknown): string {
     return "模板包格式无效";
   }
 
-  return "系统异常";
+  return rawMessage;
 }
 
 function toOwnedArrayBuffer(bytes: Uint8Array): ArrayBuffer {
   const buffer = new ArrayBuffer(bytes.byteLength);
   new Uint8Array(buffer).set(bytes);
   return buffer;
+}
+
+function decodeBytesAsUtf8(bytes: Uint8Array): string {
+  if (typeof TextDecoder !== "undefined") {
+    return new TextDecoder().decode(bytes);
+  }
+  return Array.from(bytes, (value) => String.fromCharCode(value)).join("");
+}
+
+function encodeUtf8(value: string): Uint8Array {
+  if (typeof TextEncoder !== "undefined") {
+    return new TextEncoder().encode(value);
+  }
+  return Uint8Array.from(value, (char) => char.charCodeAt(0) & 0xff);
+}
+
+async function readFileBytes(file: File): Promise<Uint8Array> {
+  if (typeof file.arrayBuffer === "function") {
+    return new Uint8Array(await file.arrayBuffer());
+  }
+  return encodeUtf8(await file.text());
 }
 
 function cloneForPaste(
@@ -314,6 +512,8 @@ async function listBrowserLocalFonts(): Promise<LocalFontMeta[]> {
 }
 
 export default function App() {
+  const initialCachedPrinters = useMemo(() => getCachedSystemPrinters(), []);
+
   const documents = useEditorStore((state) => state.documents);
   const activeDocument = useEditorStore(selectActiveDocument);
   const createDocument = useEditorStore((state) => state.createDocument);
@@ -332,10 +532,11 @@ export default function App() {
 
   const rows = useDataImportStore((state) => state.rows);
 
+  const [lastNewLabelSize, setLastNewLabelSize] = useState<LabelSize>(() => readLastNewLabelSize());
   const [newLabelOpen, setNewLabelOpen] = useState(false);
   const [newLabelTitle, setNewLabelTitle] = useState("新建标签");
-  const [newLabelWidth, setNewLabelWidth] = useState(40);
-  const [newLabelHeight, setNewLabelHeight] = useState(30);
+  const [newLabelWidth, setNewLabelWidth] = useState(lastNewLabelSize.widthMm);
+  const [newLabelHeight, setNewLabelHeight] = useState(lastNewLabelSize.heightMm);
 
   const [settingsOpen, setSettingsOpen] = useState(false);
   const [settingsTitle, setSettingsTitle] = useState("");
@@ -345,6 +546,11 @@ export default function App() {
   const [printOpen, setPrintOpen] = useState(false);
   const [submitStatus, setSubmitStatus] = useState("");
   const [submitting, setSubmitting] = useState(false);
+  const [loadingPrinters, setLoadingPrinters] = useState(false);
+  const [availablePrinters, setAvailablePrinters] = useState<string[]>(initialCachedPrinters);
+  const [hasLoadedSystemPrinters, setHasLoadedSystemPrinters] = useState(false);
+  const [systemPrinterCount, setSystemPrinterCount] = useState(0);
+  const [usingCachedPrinters, setUsingCachedPrinters] = useState(initialCachedPrinters.length > 0);
   const [toolbarStatus, setToolbarStatus] = useState("");
   const [copiedElements, setCopiedElements] = useState<EditorElement[]>([]);
   const [fileMenuOpen, setFileMenuOpen] = useState(false);
@@ -354,12 +560,19 @@ export default function App() {
   const [systemFonts, setSystemFonts] = useState<FontOption[]>(DEFAULT_FONT_OPTIONS);
   const [titlebarDragStart, setTitlebarDragStart] = useState<{ x: number; y: number } | null>(null);
   const [activePage, setActivePage] = useState<"editor" | "home">("home");
+  const [pendingCloseConfirm, setPendingCloseConfirm] = useState<CloseConfirmRequest | null>(null);
   const [recentOpenedItems, setRecentOpenedItems] = useState<HomeRecentItem[]>(() => readRecentOpenedItems());
   const [homeSearchKeyword, setHomeSearchKeyword] = useState("");
 
   const fileMenuRef = useRef<HTMLDivElement | null>(null);
   const templateFileInputRef = useRef<HTMLInputElement | null>(null);
   const savedFileHandlesRef = useRef<Map<string, SaveFileHandle>>(new Map());
+  const savedDocumentSignaturesRef = useRef<Map<string, string>>(new Map());
+  const openTemplateFilePayloadRef = useRef<
+    (sourcePath: string, bytes: Uint8Array, displayFileName?: string) => Promise<void>
+  >(async () => {});
+  const availablePrintersRef = useRef<string[]>(initialCachedPrinters);
+  const printerRefreshPendingRef = useRef(false);
 
   const printableRows = useMemo(() => (rows.length > 0 ? rows : [{ code: "123456789" }]), [rows]);
   const canUndo = activeDocument.undoStack.length > 0;
@@ -372,11 +585,91 @@ export default function App() {
     return recentOpenedItems.filter((item) => {
       const fileName = item.fileName.toLocaleLowerCase("zh-CN");
       const title = item.snapshot.title.toLocaleLowerCase("zh-CN");
-      return fileName.includes(keyword) || title.includes(keyword);
+      const dateTokens = buildRecentDateSearchTokens(item.openedAt);
+      return (
+        fileName.includes(keyword) ||
+        title.includes(keyword) ||
+        dateTokens.some((token) => token.toLocaleLowerCase("zh-CN").includes(keyword))
+      );
     });
   }, [homeSearchKeyword, recentOpenedItems]);
   const hasOnlyInitialUntouchedDocument = documents.length === 1 && isInitialUntouchedDocument(documents[0]);
   const visibleDocuments = activePage === "home" && hasOnlyInitialUntouchedDocument ? [] : documents;
+
+  const markDocumentSavedBySnapshot = (documentId: string, snapshot: TemplateSnapshot) => {
+    savedDocumentSignaturesRef.current.set(documentId, toSnapshotSignature(cloneSnapshot(snapshot)));
+  };
+
+  const isDocumentUnsaved = (document: EditorDocument): boolean => {
+    const savedSignature = savedDocumentSignaturesRef.current.get(document.id);
+    if (!savedSignature) {
+      return !isInitialUntouchedDocument(document);
+    }
+    const currentSignature = toSnapshotSignature(buildTemplateSnapshot(document));
+    return currentSignature !== savedSignature;
+  };
+
+  const closeDocumentNow = (documentId: string): boolean => {
+    const currentDocuments = useEditorStore.getState().documents;
+    const target = currentDocuments.find((document) => document.id === documentId);
+    if (!target) {
+      return false;
+    }
+
+    const currentVisibleDocuments =
+      activePage === "home" && currentDocuments.length === 1 && isInitialUntouchedDocument(currentDocuments[0])
+        ? []
+        : currentDocuments;
+    const closingLastVisible = currentVisibleDocuments.length <= 1;
+    closeDocument(target.id);
+    if (closingLastVisible) {
+      setActivePage("home");
+    }
+    setToolbarStatus(`已关闭标签：${target.title}`);
+    return true;
+  };
+
+  const closeDocumentWithPrompt = (documentId: string): boolean => {
+    const target = useEditorStore.getState().documents.find((document) => document.id === documentId);
+    if (!target) {
+      return false;
+    }
+    if (isDocumentUnsaved(target)) {
+      setPendingCloseConfirm({
+        kind: "tab",
+        documentId: target.id,
+        documentTitle: target.title,
+      });
+      return false;
+    }
+    return closeDocumentNow(target.id);
+  };
+
+  const dismissCloseConfirm = () => {
+    const request = pendingCloseConfirm;
+    if (!request) {
+      return;
+    }
+    if (request.kind === "app") {
+      setToolbarStatus("已取消关闭程序。");
+    } else {
+      setToolbarStatus(`已取消关闭：${request.documentTitle}`);
+    }
+    setPendingCloseConfirm(null);
+  };
+
+  const acceptCloseConfirm = () => {
+    const request = pendingCloseConfirm;
+    if (!request) {
+      return;
+    }
+    setPendingCloseConfirm(null);
+    if (request.kind === "app") {
+      void closeWindow();
+      return;
+    }
+    closeDocumentNow(request.documentId);
+  };
 
   const focusOpenedDocumentByFileName = (fileName: string): boolean => {
     const lookupKey = normalizeDocumentLookupKey(fileName);
@@ -416,6 +709,9 @@ export default function App() {
   useEffect(() => {
     const onKeyDown = (event: KeyboardEvent) => {
       const key = event.key.toLowerCase();
+      if (isEditableShortcutTarget(event.target)) {
+        return;
+      }
       if (!event.ctrlKey) {
         return;
       }
@@ -451,27 +747,125 @@ export default function App() {
   }, []);
 
   useEffect(() => {
+    availablePrintersRef.current = availablePrinters;
+  }, [availablePrinters]);
+
+  const refreshSystemPrinters = useCallback(async (background = true) => {
+    if (printerRefreshPendingRef.current) {
+      return;
+    }
+    printerRefreshPendingRef.current = true;
+    if (!background) {
+      setLoadingPrinters(true);
+    }
+    try {
+      const fromSystem = await listSystemPrinters();
+      const normalized = Array.from(new Set(fromSystem.map((item) => item.trim()).filter((item) => item.length > 0)));
+      if (normalized.length > 0) {
+        setHasLoadedSystemPrinters(true);
+        setSystemPrinterCount(normalized.length);
+        setUsingCachedPrinters(false);
+      }
+      const currentPrinter = useEditorStore
+        .getState()
+        .documents.find((document) => document.id === useEditorStore.getState().activeDocumentId)?.printerId;
+
+      const nextPrinters = normalized.length > 0 ? [...normalized] : [...availablePrintersRef.current];
+      if (currentPrinter && !nextPrinters.includes(currentPrinter)) {
+        nextPrinters.unshift(currentPrinter);
+      }
+      const previousPrinters = availablePrintersRef.current;
+      const sameOrder =
+        previousPrinters.length === nextPrinters.length &&
+        previousPrinters.every((item, index) => item === nextPrinters[index]);
+      if (!sameOrder) {
+        availablePrintersRef.current = nextPrinters;
+        setAvailablePrinters(nextPrinters);
+      }
+
+      if (nextPrinters.length > 0 && (!currentPrinter || !nextPrinters.includes(currentPrinter))) {
+        setPrinterConfig({ printerId: nextPrinters[0] });
+      }
+    } finally {
+      printerRefreshPendingRef.current = false;
+      if (!background) {
+        setLoadingPrinters(false);
+      }
+    }
+  }, [setPrinterConfig]);
+
+  useEffect(() => {
+    void refreshSystemPrinters(true);
+  }, [refreshSystemPrinters]);
+
+  useEffect(() => {
+    if (!printOpen || hasLoadedSystemPrinters) {
+      return;
+    }
+    void refreshSystemPrinters(true);
+  }, [hasLoadedSystemPrinters, printOpen, refreshSystemPrinters]);
+
+  useEffect(() => {
+    if (availablePrinters.length === 0) {
+      return;
+    }
+    if (availablePrinters.includes(activeDocument.printerId)) {
+      return;
+    }
+    const nextPrinterId = availablePrinters[0];
+    if (!isDocumentUnsaved(activeDocument)) {
+      const nextSnapshot = {
+        ...buildTemplateSnapshot(activeDocument),
+        printerId: nextPrinterId,
+      };
+      markDocumentSavedBySnapshot(activeDocument.id, nextSnapshot);
+    }
+    setPrinterConfig({ printerId: nextPrinterId });
+  }, [
+    activeDocument,
+    availablePrinters,
+    isDocumentUnsaved,
+    markDocumentSavedBySnapshot,
+    setPrinterConfig,
+  ]);
+
+  useEffect(() => {
     const existingIds = new Set(documents.map((item) => item.id));
     for (const id of savedFileHandlesRef.current.keys()) {
       if (!existingIds.has(id)) {
         savedFileHandlesRef.current.delete(id);
       }
     }
+
+    const signatures = savedDocumentSignaturesRef.current;
+    for (const id of signatures.keys()) {
+      if (!existingIds.has(id)) {
+        signatures.delete(id);
+      }
+    }
+    for (const document of documents) {
+      if (!signatures.has(document.id)) {
+        signatures.set(document.id, toSnapshotSignature(buildTemplateSnapshot(document)));
+      }
+    }
   }, [documents]);
 
-  const rememberRecentOpened = (fileName: string, snapshot: TemplateSnapshot) => {
+  const rememberRecentOpened = (fileName: string, snapshot: TemplateSnapshot, filePath: string | null = null) => {
     const normalizedName = normalizeRecentFileName(fileName, snapshot.title);
+    const normalizedPath = resolveKnownDocumentPath(filePath);
     const copiedSnapshot = cloneSnapshot(snapshot);
     const openedAt = Date.now();
+    const currentLookupKey = buildRecentEntryLookupKey(normalizedName, normalizedPath);
 
     setRecentOpenedItems((previous) => {
       const remaining = previous.filter(
-        (item) => item.fileName.toLocaleLowerCase("zh-CN") !== normalizedName.toLocaleLowerCase("zh-CN")
+        (item) => buildRecentEntryLookupKey(item.fileName, item.filePath ?? null) !== currentLookupKey
       );
       const next: HomeRecentItem[] = [
         {
           id: `${openedAt}-${Math.random().toString(16).slice(2, 8)}`,
           fileName: normalizedName,
+          filePath: normalizedPath,
           saved: true,
           openedAt,
           snapshot: copiedSnapshot,
@@ -519,24 +913,52 @@ export default function App() {
   const openNewLabelModal = () => {
     const existingDocumentCount = hasOnlyInitialUntouchedDocument ? 0 : documents.length;
     setNewLabelTitle(`新建标签${existingDocumentCount + 1}`);
-    setNewLabelWidth(40);
-    setNewLabelHeight(30);
+    setNewLabelWidth(lastNewLabelSize.widthMm);
+    setNewLabelHeight(lastNewLabelSize.heightMm);
     setNewLabelOpen(true);
+  };
+
+  const closeActiveDocumentByShortcut = () => {
+    closeDocumentWithPrompt(useEditorStore.getState().activeDocumentId);
+  };
+
+  const requestCloseWindow = () => {
+    const unsavedDocuments = useEditorStore
+      .getState()
+      .documents.filter((document) => isDocumentUnsaved(document));
+    if (unsavedDocuments.length > 0) {
+      setPendingCloseConfirm({
+        kind: "app",
+        unsavedCount: unsavedDocuments.length,
+      });
+      return;
+    }
+    void closeWindow();
   };
 
   const confirmCreateLabel = () => {
     const existingDocumentCount = hasOnlyInitialUntouchedDocument ? 0 : documents.length;
     const nextTitle = newLabelTitle.trim() || `新建标签${existingDocumentCount + 1}`;
     const nextLabelSize = {
-      widthMm: parsePositive(newLabelWidth, 40),
-      heightMm: parsePositive(newLabelHeight, 30),
+      widthMm: parsePositive(newLabelWidth, DEFAULT_NEW_LABEL_SIZE.widthMm),
+      heightMm: parsePositive(newLabelHeight, DEFAULT_NEW_LABEL_SIZE.heightMm),
     };
     const initialDocumentId = hasOnlyInitialUntouchedDocument ? documents[0]?.id : null;
 
-    createDocument({
+    const createdDocumentId = createDocument({
       title: nextTitle,
       labelSize: nextLabelSize,
     });
+    markDocumentSavedBySnapshot(createdDocumentId, {
+      title: nextTitle,
+      labelSize: nextLabelSize,
+      elements: [],
+      calibration: { offsetX: 0, offsetY: 0, scale: 1 },
+      printerId: "Zebra-01",
+      copies: 1,
+    });
+    setLastNewLabelSize(nextLabelSize);
+    writeLastNewLabelSize(nextLabelSize);
     if (initialDocumentId) {
       closeDocument(initialDocumentId);
     }
@@ -563,36 +985,54 @@ export default function App() {
     setToolbarStatus("标签设置已更新。");
   };
 
-  const onSubmitPrint = async (overrideCopies?: number) => {
+  const onSubmitPrint = async (directPrintInput: DirectPrintSubmitInput): Promise<boolean> => {
     if (activeDocument.elements.length === 0) {
       setSubmitStatus("打印前请至少添加一个元素。");
-      return;
+      return false;
     }
 
-    const requestedCopies =
-      typeof overrideCopies === "number" && Number.isFinite(overrideCopies)
-        ? Math.max(1, Math.floor(overrideCopies))
-        : activeDocument.copies;
+    const requestedCopies = Math.max(1, Math.floor(directPrintInput.copies));
 
     setSubmitting(true);
-    setSubmitStatus("");
+    setSubmitStatus("正在提交到系统打印机...");
 
     try {
       const payload = buildPrintSubmitPayload({
         templateId: 1,
         templateVersion: 2,
         labelSize: activeDocument.labelSize,
-        printerId: activeDocument.printerId,
+        printerId: directPrintInput.printerId,
         copies: requestedCopies,
         calibration: activeDocument.calibration,
         elements: activeDocument.elements,
         records: printableRows,
       });
       const submitPayload = toSubmitTaskPayload(payload);
-      const jobId = await submitPrintTask(submitPayload);
-      setSubmitStatus(`打印任务已提交（#${jobId}），共 ${payload.totalItems} 项。`);
+      const printResult = await submitDirectPrint({
+        templateId: submitPayload.templateId,
+        totalItems: submitPayload.totalItems,
+        printerId: directPrintInput.printerId,
+        copies: submitPayload.copies,
+        calibrationJson: JSON.stringify(submitPayload.calibration),
+        payloadJson: submitPayload.payload,
+        previewPngBase64: directPrintInput.previewPngBase64,
+        widthMm: directPrintInput.widthMm,
+        heightMm: directPrintInput.heightMm,
+        title: activeDocument.title,
+      });
+      if (printResult.outputPath) {
+        setSubmitStatus(
+          `已输出 PDF（${printResult.outputPath}），任务 #${printResult.jobId}，共 ${payload.totalItems} 项。`
+        );
+      } else {
+        setSubmitStatus(
+          `已直接提交到打印机“${directPrintInput.printerId}”（任务 #${printResult.jobId}，共 ${payload.totalItems} 项）。`
+        );
+      }
+      return true;
     } catch (error) {
       setSubmitStatus(`提交失败：${toChineseErrorMessage(error)}`);
+      return false;
     } finally {
       setSubmitting(false);
     }
@@ -658,6 +1098,21 @@ export default function App() {
     };
   };
 
+  const saveTemplateBundleToKnownPath = async (
+    bundle: Uint8Array,
+    filePath: string
+  ): Promise<SaveTemplateResult> => {
+    const result = await saveTemplateFile(filePath, bundle);
+    if (!result) {
+      throw new Error("当前运行环境不支持按路径保存。");
+    }
+    return {
+      mode: "path",
+      fileName: result.fileName?.trim() || filePath,
+      filePath,
+    };
+  };
+
   const onSaveTemplate = async (name?: string) => {
     try {
       const explicitName = name?.trim() || "";
@@ -667,9 +1122,14 @@ export default function App() {
       let result: SaveTemplateResult;
       if (!explicitName) {
         const knownHandle = savedFileHandlesRef.current.get(activeDocument.id);
-        result = knownHandle
-          ? await saveTemplateBundleToKnownTarget(packed, knownHandle)
-          : await saveTemplateBundleWithDialog(packed, activeDocument.title);
+        const knownPath = resolveKnownDocumentPath(activeDocument.filePath);
+        if (knownHandle) {
+          result = await saveTemplateBundleToKnownTarget(packed, knownHandle);
+        } else if (knownPath) {
+          result = await saveTemplateBundleToKnownPath(packed, knownPath);
+        } else {
+          result = await saveTemplateBundleWithDialog(packed, activeDocument.title);
+        }
       } else {
         result = await saveTemplateBundleWithDialog(packed, explicitName);
       }
@@ -683,17 +1143,24 @@ export default function App() {
         ...snapshot,
         title: savedTitle,
       };
+      const nextFilePath =
+        result.mode === "path"
+          ? result.filePath || activeDocument.filePath
+          : result.handle
+            ? result.fileName
+            : activeDocument.filePath;
 
       setDocumentFileMeta(
         activeDocument.id,
-        result.handle ? result.fileName : activeDocument.filePath,
+        nextFilePath,
         savedTitle
       );
-      rememberRecentOpened(savedTitle, savedSnapshot);
+      markDocumentSavedBySnapshot(activeDocument.id, savedSnapshot);
+      rememberRecentOpened(savedTitle, savedSnapshot, nextFilePath ?? null);
 
       if (result.mode === "download") {
         setToolbarStatus("模板已下载。");
-      } else if (result.mode === "direct") {
+      } else if (result.mode === "direct" || result.mode === "path") {
         setToolbarStatus("模板已保存。");
       } else {
         setToolbarStatus("模板已保存到文件。");
@@ -710,14 +1177,57 @@ export default function App() {
     await onSaveTemplate(name);
   };
 
-  const openSnapshotAsDocument = (snapshot: TemplateSnapshot, sourceFileName?: string): boolean => {
+  useEffect(() => {
+    const onKeyDown = (event: KeyboardEvent) => {
+      const key = event.key.toLowerCase();
+      if (!(event.ctrlKey || event.metaKey) || event.altKey) {
+        return;
+      }
+      if (isEditableShortcutTarget(event.target) && key !== "s") {
+        return;
+      }
+
+      if (key === "n") {
+        event.preventDefault();
+        openNewLabelModal();
+        return;
+      }
+      if (key === "s") {
+        event.preventDefault();
+        void onSaveTemplate();
+        return;
+      }
+      if (key === "p") {
+        if (activePage !== "editor") {
+          return;
+        }
+        event.preventDefault();
+        setPrintOpen(true);
+        return;
+      }
+      if (key === "w") {
+        event.preventDefault();
+        closeActiveDocumentByShortcut();
+      }
+    };
+
+    window.addEventListener("keydown", onKeyDown);
+    return () => window.removeEventListener("keydown", onKeyDown);
+  }, [activePage, closeActiveDocumentByShortcut, onSaveTemplate]);
+
+  const openSnapshotAsDocument = (
+    snapshot: TemplateSnapshot,
+    sourceFileName?: string,
+    preferredTitle?: string
+  ): boolean => {
     if (sourceFileName && focusOpenedDocumentByFileName(sourceFileName)) {
       return false;
     }
 
     const initialDocumentId = hasOnlyInitialUntouchedDocument ? documents[0]?.id : null;
-    createDocument({
-      title: snapshot.title,
+    const normalizedTitle = preferredTitle?.trim() || snapshot.title;
+    const createdDocumentId = createDocument({
+      title: normalizedTitle,
       labelSize: snapshot.labelSize,
       filePath: sourceFileName?.trim() || null,
     });
@@ -728,6 +1238,10 @@ export default function App() {
     setCalibration(snapshot.calibration);
     setPrinterConfig({ printerId: snapshot.printerId, copies: snapshot.copies });
     setSelection([]);
+    markDocumentSavedBySnapshot(createdDocumentId, {
+      ...snapshot,
+      title: normalizedTitle,
+    });
     setActivePage("editor");
     return true;
   };
@@ -738,8 +1252,17 @@ export default function App() {
       setToolbarStatus("模板解析失败。");
       return;
     }
-    const opened = openSnapshotAsDocument(snapshot, template.name);
-    rememberRecentOpened(template.name, snapshot);
+    const preferredTitle = normalizeRecentFileName(template.name, snapshot.title);
+    const titledSnapshot: TemplateSnapshot = {
+      ...snapshot,
+      title: preferredTitle,
+    };
+    const opened = openSnapshotAsDocument(
+      titledSnapshot,
+      template.name,
+      preferredTitle
+    );
+    rememberRecentOpened(template.name, titledSnapshot, template.name);
     if (!opened) {
       return;
     }
@@ -797,9 +1320,181 @@ export default function App() {
     setToolbarStatus("已导出 JSON。");
   };
 
-  const onPickTemplateFile = () => {
+  const onPickTemplateFile = async () => {
+    const picked = await pickTemplateFile();
+    if (picked.status === "selected") {
+      await openTemplateFilePayload(
+        picked.file.filePath,
+        new Uint8Array(picked.file.bytes),
+        picked.file.fileName
+      );
+      return;
+    }
+    if (picked.status === "cancelled") {
+      return;
+    }
     templateFileInputRef.current?.click();
   };
+
+  const parseTemplatePayload = (
+    fileName: string,
+    bytes: Uint8Array
+  ): {
+    snapshot: TemplateSnapshot;
+    ddlImportStats: {
+      importedCount: number;
+      ignoredCount: number;
+      ignoredTypes: Array<{ type: string; count: number }>;
+    } | null;
+  } | null => {
+    const lowerName = fileName.toLowerCase();
+    const fallbackName = getTemplateFileBaseName(fileName);
+
+    try {
+      if (lowerName.endsWith(".lpt")) {
+        try {
+          return {
+            snapshot: unpackTemplateBundle(bytes),
+            ddlImportStats: null,
+          };
+        } catch {
+          const fallbackSnapshot = parseTemplateSnapshot(decodeBytesAsUtf8(bytes), fallbackName);
+          if (!fallbackSnapshot) {
+            return null;
+          }
+          return {
+            snapshot: fallbackSnapshot,
+            ddlImportStats: null,
+          };
+        }
+      }
+
+      if (lowerName.endsWith(".ddl")) {
+        const ddlResult = parseDdlTemplate(decodeBytesAsUtf8(bytes), fallbackName);
+        if (!ddlResult) {
+          return null;
+        }
+        return {
+          snapshot: ddlResult.snapshot,
+          ddlImportStats: {
+            importedCount: ddlResult.importedCount,
+            ignoredCount: ddlResult.ignoredCount,
+            ignoredTypes: ddlResult.ignoredTypes,
+          },
+        };
+      }
+
+      const snapshot = parseTemplateSnapshot(decodeBytesAsUtf8(bytes), fallbackName);
+      if (!snapshot) {
+        return null;
+      }
+      return {
+        snapshot,
+        ddlImportStats: null,
+      };
+    } catch {
+      return null;
+    }
+  };
+
+  const openTemplateFilePayload = async (
+    sourcePath: string,
+    bytes: Uint8Array,
+    displayFileName?: string
+  ) => {
+    const normalizedSourcePath = sourcePath.trim();
+    const pathSegments = normalizedSourcePath.split(/[\\/]/);
+    const inferredDisplayName = pathSegments[pathSegments.length - 1] || normalizedSourcePath;
+    const normalizedDisplayName = (displayFileName?.trim() || inferredDisplayName || "未命名模板").trim();
+    const documentSourcePath = (normalizedSourcePath || normalizedDisplayName).trim();
+
+    if (focusOpenedDocumentByFileName(documentSourcePath)) {
+      return;
+    }
+
+    const parsed = parseTemplatePayload(normalizedDisplayName, bytes);
+    if (!parsed) {
+      setToolbarStatus("模板解析失败。");
+      return;
+    }
+    const { snapshot, ddlImportStats } = parsed;
+    const preferredTitle = normalizeRecentFileName(normalizedDisplayName, snapshot.title);
+    const titledSnapshot: TemplateSnapshot = {
+      ...snapshot,
+      title: preferredTitle,
+    };
+
+    const opened = openSnapshotAsDocument(titledSnapshot, documentSourcePath, preferredTitle);
+    rememberRecentOpened(normalizedDisplayName, titledSnapshot, documentSourcePath);
+    if (!opened) {
+      return;
+    }
+    if (ddlImportStats) {
+      const ignoredTypeSummary =
+        ddlImportStats.ignoredCount > 0 && ddlImportStats.ignoredTypes.length > 0
+          ? `，类型：${ddlImportStats.ignoredTypes.map((item) => `${item.type}×${item.count}`).join("、")}`
+          : "";
+      setToolbarStatus(
+        `已打开模板文件：${normalizedDisplayName}（导入${ddlImportStats.importedCount}个元素，忽略${ddlImportStats.ignoredCount}个${ignoredTypeSummary}）`
+      );
+    } else {
+      setToolbarStatus(`已打开模板文件：${normalizedDisplayName}`);
+    }
+  };
+
+  useEffect(() => {
+    openTemplateFilePayloadRef.current = openTemplateFilePayload;
+  }, [openTemplateFilePayload]);
+
+  useEffect(() => {
+    let cancelled = false;
+
+    let unlisten: (() => void) | null = null;
+
+    const openLaunchFiles = async (launchFiles: LaunchFilePayload[]) => {
+      if (cancelled || launchFiles.length === 0) {
+        return;
+      }
+
+      for (const item of launchFiles) {
+        if (cancelled) {
+          return;
+        }
+        const sourcePath = item.filePath?.trim() || item.fileName;
+        try {
+          await openTemplateFilePayloadRef.current(sourcePath, new Uint8Array(item.bytes), item.fileName);
+        } catch {
+          // 继续处理后续文件，避免单个异常中断整批启动文件。
+        }
+      }
+    };
+
+    const drainLaunchFiles = async () => {
+      const launchFiles = await consumeLaunchFiles();
+      await openLaunchFiles(launchFiles);
+    };
+
+    const setupLaunchBridge = async () => {
+      unlisten = await subscribeLaunchFiles((payloads) => {
+        void openLaunchFiles(payloads);
+      });
+      await drainLaunchFiles();
+    };
+
+    const onWindowFocus = () => {
+      void drainLaunchFiles();
+    };
+
+    window.addEventListener("focus", onWindowFocus);
+    void setupLaunchBridge();
+    return () => {
+      cancelled = true;
+      window.removeEventListener("focus", onWindowFocus);
+      if (unlisten) {
+        unlisten();
+      }
+    };
+  }, []);
 
   const onTemplateFileChange = async (event: ChangeEvent<HTMLInputElement>) => {
     const file = event.target.files?.[0];
@@ -812,47 +1507,28 @@ export default function App() {
         return;
       }
 
-      const lowerName = file.name.toLowerCase();
-      const fallbackName = getTemplateFileBaseName(file.name);
-
-      let snapshot: TemplateSnapshot | null = null;
-      let ddlImportStats:
-        | {
-            importedCount: number;
-            ignoredCount: number;
-            ignoredTypes: Array<{ type: string; count: number }>;
-          }
-        | null = null;
-      if (lowerName.endsWith(".lpt")) {
-        snapshot = unpackTemplateBundle(new Uint8Array(await file.arrayBuffer()));
-      } else if (lowerName.endsWith(".ddl")) {
-        const ddlResult = parseDdlTemplate(await file.text(), fallbackName);
-        if (ddlResult) {
-          snapshot = ddlResult.snapshot;
-          ddlImportStats = {
-            importedCount: ddlResult.importedCount,
-            ignoredCount: ddlResult.ignoredCount,
-            ignoredTypes: ddlResult.ignoredTypes,
-          };
-        }
-      } else {
-        snapshot = parseTemplateSnapshot(await file.text(), fallbackName);
-      }
-
-      if (!snapshot) {
+      const parsed = parseTemplatePayload(file.name, await readFileBytes(file));
+      if (!parsed) {
         setToolbarStatus("模板解析失败。");
         return;
       }
+      const { snapshot, ddlImportStats } = parsed;
+      const preferredTitle = normalizeRecentFileName(file.name, snapshot.title);
+      const titledSnapshot: TemplateSnapshot = {
+        ...snapshot,
+        title: preferredTitle,
+      };
 
-      const opened = openSnapshotAsDocument(snapshot, file.name);
-      rememberRecentOpened(file.name, snapshot);
+      const opened = openSnapshotAsDocument(titledSnapshot, file.name, preferredTitle);
+      rememberRecentOpened(file.name, titledSnapshot, null);
       if (!opened) {
         return;
       }
       if (ddlImportStats) {
         const ignoredTypeSummary =
           ddlImportStats.ignoredCount > 0 && ddlImportStats.ignoredTypes.length > 0
-            ? `，类型：${ddlImportStats.ignoredTypes
+            ? `，类型：${ddlImportStats
+                .ignoredTypes
                 .map((item) => `${item.type}×${item.count}`)
                 .join("、")}`
             : "";
@@ -876,12 +1552,23 @@ export default function App() {
       return;
     }
     const snapshot = cloneSnapshot(target.snapshot);
-    const opened = openSnapshotAsDocument(snapshot, target.fileName);
-    rememberRecentOpened(target.fileName, snapshot);
+    const preferredTitle = normalizeRecentFileName(target.fileName, snapshot.title);
+    const titledSnapshot: TemplateSnapshot = {
+      ...snapshot,
+      title: preferredTitle,
+    };
+    const knownPath = resolveKnownDocumentPath(target.filePath ?? null);
+    const sourcePath = knownPath || target.fileName;
+    const opened = openSnapshotAsDocument(titledSnapshot, sourcePath, preferredTitle);
+    rememberRecentOpened(target.fileName, titledSnapshot, target.filePath ?? null);
     if (!opened) {
       return;
     }
-    setToolbarStatus(`已从最近使用打开：${target.fileName}`);
+    if (knownPath) {
+      setToolbarStatus(`已从最近使用打开：${target.fileName}`);
+    } else {
+      setToolbarStatus("已从最近使用打开（缺少原始路径，保存时会提示另存为，请重新从“打开”选择源文件）。");
+    }
   };
 
   const onCopySelection = () => {
@@ -947,7 +1634,9 @@ export default function App() {
             setActivePage("home");
           }}
         >
-          <span className="brand-mark">HC</span>
+          <span className="brand-mark" aria-hidden="true">
+            <img src={appLogo} alt="" draggable={false} />
+          </span>
           <span className="brand-name">恒策标签条码打印软件</span>
         </button>
 
@@ -967,16 +1656,14 @@ export default function App() {
               >
                 {document.title}
               </button>
-              {visibleDocuments.length > 1 ? (
-                <button
-                  type="button"
-                  className="close-tab"
-                  onClick={() => closeDocument(document.id)}
-                  aria-label={`关闭${document.title}`}
-                >
-                  ×
-                </button>
-              ) : null}
+              <button
+                type="button"
+                className="close-tab"
+                onClick={() => closeDocumentWithPrompt(document.id)}
+                aria-label={`关闭${document.title}`}
+              >
+                ×
+              </button>
             </div>
           ))}
           <button type="button" className="new-tab" onClick={openNewLabelModal}>
@@ -993,7 +1680,7 @@ export default function App() {
           <button type="button" className="win-btn" aria-label="最大化" onClick={() => void toggleMaximizeWindow()}>
             <span className="win-icon win-icon-maximize" aria-hidden="true" />
           </button>
-          <button type="button" className="win-btn close" aria-label="关闭" onClick={() => void closeWindow()}>
+          <button type="button" className="win-btn close" aria-label="关闭" onClick={requestCloseWindow}>
             <span className="win-icon win-icon-close" aria-hidden="true" />
           </button>
         </div>
@@ -1149,8 +1836,12 @@ export default function App() {
         heightMm={newLabelHeight}
         onClose={() => setNewLabelOpen(false)}
         onTitleChange={setNewLabelTitle}
-        onWidthChange={(value) => setNewLabelWidth(Number.isFinite(value) ? value : 40)}
-        onHeightChange={(value) => setNewLabelHeight(Number.isFinite(value) ? value : 30)}
+        onWidthChange={(value) =>
+          setNewLabelWidth(Number.isFinite(value) ? value : lastNewLabelSize.widthMm)
+        }
+        onHeightChange={(value) =>
+          setNewLabelHeight(Number.isFinite(value) ? value : lastNewLabelSize.heightMm)
+        }
         onConfirm={confirmCreateLabel}
       />
 
@@ -1220,18 +1911,61 @@ export default function App() {
         </div>
       ) : null}
 
+      {pendingCloseConfirm ? (
+        <div className="modal-mask" onClick={dismissCloseConfirm}>
+          <section
+            className="modal-card confirm-modal"
+            role="dialog"
+            aria-modal="true"
+            aria-labelledby="close-confirm-title"
+            onClick={(event) => event.stopPropagation()}
+          >
+            <header className="modal-header confirm-modal-header">
+              <h3 id="close-confirm-title">
+                {pendingCloseConfirm.kind === "app" ? "关闭程序确认" : "关闭标签确认"}
+              </h3>
+            </header>
+            <p className="confirm-modal-lead">
+              {pendingCloseConfirm.kind === "app"
+                ? `检测到 ${pendingCloseConfirm.unsavedCount} 个标签存在未保存变更。`
+                : `标签“${pendingCloseConfirm.documentTitle}”存在未保存变更。`}
+            </p>
+            <p className="confirm-modal-detail">继续关闭将丢失本次编辑内容，且无法直接恢复。</p>
+            <div className="confirm-modal-actions">
+              <button type="button" className="tool-ghost confirm-cancel" onClick={dismissCloseConfirm}>
+                返回继续编辑
+              </button>
+              <button type="button" className="primary confirm-confirm confirm-modal-danger" onClick={acceptCloseConfirm}>
+                {pendingCloseConfirm.kind === "app" ? "确认关闭程序" : "仍要关闭标签"}
+              </button>
+            </div>
+          </section>
+        </div>
+      ) : null}
+
       <PrintSubmitModal
         open={printOpen}
         title={activeDocument.title}
         labelSize={activeDocument.labelSize}
-        printers={DEFAULT_PRINTERS}
+        printers={availablePrinters}
+        printerHint={
+          loadingPrinters
+            ? "正在读取本机打印机列表..."
+            : hasLoadedSystemPrinters
+              ? `已读取到 ${systemPrinterCount} 台系统打印机。`
+              : usingCachedPrinters
+                ? "已加载缓存打印机列表，后台同步中..."
+                : "未读取到本机系统打印机，当前仅显示模板中保存的打印机。请在桌面版环境点击“刷新系统打印机”。"
+        }
         printerId={activeDocument.printerId}
         copies={activeDocument.copies}
         elements={activeDocument.elements}
         previewRecord={printableRows[0] ?? {}}
         submitStatus={submitStatus}
         submitting={submitting}
+        loadingPrinters={loadingPrinters}
         onClose={() => setPrintOpen(false)}
+        onRefreshPrinters={() => void refreshSystemPrinters(false)}
         onPrinterChange={(value) => setPrinterConfig({ printerId: value })}
         onCopiesChange={(value) => setPrinterConfig({ copies: value })}
         onConfirm={onSubmitPrint}
@@ -1239,3 +1973,5 @@ export default function App() {
     </main>
   );
 }
+
+

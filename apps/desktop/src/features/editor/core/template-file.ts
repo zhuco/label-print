@@ -396,6 +396,10 @@ export function parseDdlTemplateSnapshot(content: string, fallbackName: string):
           fontWeight: parseBoolean(drawObject.getAttribute("fontbold")) ? 700 : 400,
           italic: parseBoolean(drawObject.getAttribute("fontitalic")),
           underline: parseBoolean(drawObject.getAttribute("fontunderline")),
+          strikeThrough:
+            parseBoolean(drawObject.getAttribute("fontstrikethrough")) ||
+            parseBoolean(drawObject.getAttribute("fontstrikeout")) ||
+            parseBoolean(drawObject.getAttribute("fontdeleteline")),
           align: mapTextAlign(drawObject.getAttribute("alignment")),
           letterSpacing: parseFinite(drawObject.getAttribute("fontletterspacing"), 0),
         },

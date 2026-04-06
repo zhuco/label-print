@@ -1,12 +1,20 @@
-import type { ReactNode } from "react";
+import { useMemo, useState, type ReactNode } from "react";
+
+import {
+  ICON_PRESETS,
+  PresetGlyph,
+  SHAPE_PRESETS,
+  type VisualPreset,
+  type VisualPresetKind,
+} from "./core/visual-presets";
 
 type LeftPaletteProps = {
   onAddText: () => void;
   onAddBarcode: () => void;
   onAddImage: () => void;
   onAddQrcode: () => void;
-  onAddShape: () => void;
-  onAddIcon: () => void;
+  onAddShape: (presetId: string) => void;
+  onAddIcon: (presetId: string) => void;
 };
 
 type ToolItem = {
@@ -24,6 +32,49 @@ export function LeftPalette({
   onAddShape,
   onAddIcon,
 }: LeftPaletteProps) {
+  const [pickerKind, setPickerKind] = useState<VisualPresetKind | null>(null);
+  const [searchKeyword, setSearchKeyword] = useState("");
+  const [activeCategory, setActiveCategory] = useState("All");
+
+  const presetOptions = pickerKind === "shape" ? SHAPE_PRESETS : ICON_PRESETS;
+  const presetCategories = useMemo(() => {
+    const source = new Set(presetOptions.map((item) => item.category));
+    return ["All", ...source];
+  }, [presetOptions]);
+  const visiblePresets = useMemo(() => {
+    const keyword = searchKeyword.trim().toLocaleLowerCase("en-US");
+    return presetOptions.filter((item) => {
+      const matchCategory = activeCategory === "All" || item.category === activeCategory;
+      if (!matchCategory) {
+        return false;
+      }
+      if (!keyword) {
+        return true;
+      }
+      const haystack = `${item.label} ${item.id} ${item.category}`.toLocaleLowerCase("en-US");
+      return haystack.includes(keyword);
+    });
+  }, [activeCategory, presetOptions, searchKeyword]);
+
+  const openPresetPicker = (kind: VisualPresetKind) => {
+    setPickerKind(kind);
+    setSearchKeyword("");
+    setActiveCategory("All");
+  };
+
+  const closePresetPicker = () => {
+    setPickerKind(null);
+  };
+
+  const choosePreset = (preset: VisualPreset) => {
+    if (pickerKind === "shape") {
+      onAddShape(preset.id);
+    } else if (pickerKind === "icon") {
+      onAddIcon(preset.id);
+    }
+    closePresetPicker();
+  };
+
   const items: ToolItem[] = [
     {
       id: "text",
@@ -52,26 +103,90 @@ export function LeftPalette({
     {
       id: "shape",
       label: "图形",
-      onClick: onAddShape,
+      onClick: () => openPresetPicker("shape"),
       icon: <IconShape />,
     },
     {
       id: "icon",
       label: "图标",
-      onClick: onAddIcon,
+      onClick: () => openPresetPicker("icon"),
       icon: <IconStar />,
     },
   ];
 
   return (
-    <div className="tool-column">
-      {items.map((item) => (
-        <button key={item.id} type="button" className="palette-tool" onClick={item.onClick}>
-          <span className="palette-tool-icon">{item.icon}</span>
-          <span className="palette-tool-label">{item.label}</span>
-        </button>
-      ))}
-    </div>
+    <>
+      <div className="tool-column">
+        {items.map((item) => (
+          <button
+            key={item.id}
+            type="button"
+            className="palette-tool"
+            onClick={item.onClick}
+            data-testid={`tool-${item.id}`}
+          >
+            <span className="palette-tool-icon">{item.icon}</span>
+            <span className="palette-tool-label">{item.label}</span>
+          </button>
+        ))}
+      </div>
+
+      {pickerKind ? (
+        <div className="modal-mask preset-picker-mask" onClick={closePresetPicker}>
+          <section className="modal-card preset-picker-modal" onClick={(event) => event.stopPropagation()}>
+            <header className="modal-header">
+              <h3>{pickerKind === "shape" ? "选择图形" : "选择图标"}</h3>
+              <button type="button" onClick={closePresetPicker} aria-label="关闭选择弹窗">
+                ×
+              </button>
+            </header>
+
+            <div className="preset-picker-toolbar">
+              <label>
+                搜索
+                <input
+                  value={searchKeyword}
+                  onChange={(event) => setSearchKeyword(event.target.value)}
+                  placeholder={pickerKind === "shape" ? "输入图形名称" : "输入图标名称"}
+                />
+              </label>
+            </div>
+
+            <div className="preset-picker-categories">
+              {presetCategories.map((category) => (
+                <button
+                  key={category}
+                  type="button"
+                  className={`tool-ghost preset-category-btn ${activeCategory === category ? "active" : ""}`}
+                  onClick={() => setActiveCategory(category)}
+                >
+                  {category}
+                </button>
+              ))}
+            </div>
+
+            <div className="preset-picker-grid">
+              {visiblePresets.map((preset) => (
+                <button
+                  key={preset.id}
+                  type="button"
+                  className="preset-card"
+                  onClick={() => choosePreset(preset)}
+                  data-testid={`preset-card-${preset.id}`}
+                >
+                  <span className="preset-card-preview" aria-hidden="true">
+                    <PresetGlyph kind={pickerKind} presetId={preset.id} className="preset-glyph" />
+                  </span>
+                  <span className="preset-card-label">{preset.label}</span>
+                  <span className="preset-card-meta">{preset.category}</span>
+                </button>
+              ))}
+              {visiblePresets.length === 0 ? <p className="muted">没有匹配的预设。</p> : null}
+            </div>
+          </section>
+        </div>
+      ) : null}
+    </>
   );
 }
 
@@ -148,3 +263,4 @@ function IconStar() {
     </IconShell>
   );
 }
+

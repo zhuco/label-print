@@ -1,4 +1,4 @@
-import { cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
+﻿import { cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 const minimizeWindowMock = vi.fn();
@@ -6,6 +6,9 @@ const toggleMaximizeWindowMock = vi.fn();
 const closeWindowMock = vi.fn();
 const startDragWindowMock = vi.fn();
 const showSaveFilePickerMock = vi.fn();
+const consumeLaunchFilesMock = vi.fn();
+const subscribeLaunchFilesMock = vi.fn();
+const launchFileListeners: Array<(payloads: unknown[]) => void> = [];
 
 vi.mock("../../services/ipc/window-controls", () => ({
   minimizeWindow: () => minimizeWindowMock(),
@@ -14,7 +17,13 @@ vi.mock("../../services/ipc/window-controls", () => ({
   startDragWindow: () => startDragWindowMock(),
 }));
 
+vi.mock("../../services/ipc/launch-files", () => ({
+  consumeLaunchFiles: () => consumeLaunchFilesMock(),
+  subscribeLaunchFiles: (handler: (payloads: unknown[]) => void) => subscribeLaunchFilesMock(handler),
+}));
+
 import App from "../../App";
+import { resetEditorStoreForTests, useEditorStore } from "../../features/editor/editor.store";
 
 const DDL_IMPORT_SAMPLE = `<?xml version="1.0" encoding="UTF-8"?>
 <DLabel source="pc" version="3.2.8">
@@ -36,6 +45,16 @@ const DDL_IMPORT_SAMPLE = `<?xml version="1.0" encoding="UTF-8"?>
 </DLabel>`;
 
 describe("App shell", () => {
+  const openNewLabelModal = (container: HTMLElement) => {
+    const newTabButton = container.querySelector<HTMLButtonElement>(".new-tab");
+    expect(newTabButton).not.toBeNull();
+    fireEvent.click(newTabButton!);
+
+    const modal = container.querySelector<HTMLElement>(".new-label-modal");
+    expect(modal).not.toBeNull();
+    return modal!;
+  };
+
   const enterEditorMode = (container: HTMLElement) => {
     const tabButton = container.querySelector<HTMLButtonElement>(".doc-tab > button");
     if (tabButton) {
@@ -57,23 +76,42 @@ describe("App shell", () => {
   });
 
   beforeEach(() => {
+    resetEditorStoreForTests();
     minimizeWindowMock.mockReset();
     toggleMaximizeWindowMock.mockReset();
     closeWindowMock.mockReset();
     startDragWindowMock.mockReset();
     showSaveFilePickerMock.mockReset();
+    consumeLaunchFilesMock.mockReset();
+    subscribeLaunchFilesMock.mockReset();
+    launchFileListeners.length = 0;
     localStorage.clear();
-
+    consumeLaunchFilesMock.mockResolvedValue([]);
+    subscribeLaunchFilesMock.mockImplementation((handler: (payloads: unknown[]) => void) => {
+      launchFileListeners.push(handler);
+      return Promise.resolve(() => {
+        const index = launchFileListeners.indexOf(handler);
+        if (index >= 0) {
+          launchFileListeners.splice(index, 1);
+        }
+      });
+    });
     Object.defineProperty(window, "showSaveFilePicker", {
       configurable: true,
       writable: true,
       value: showSaveFilePickerMock,
+    });
+    Object.defineProperty(window, "__TAURI__", {
+      configurable: true,
+      writable: true,
+      value: undefined,
     });
   });
 
   it("renders custom titlebar with logo and tabs", () => {
     const { container } = render(<App />);
     expect(container.querySelector(".brand-home")).not.toBeNull();
+    expect(container.querySelector(".brand-mark img")).not.toBeNull();
     expect(container.querySelector(".new-tab")).not.toBeNull();
   });
 
@@ -83,6 +121,162 @@ describe("App shell", () => {
     expect(container.querySelector(".shell-commandbar")).toBeNull();
     expect(container.querySelector(".new-label-modal")).toBeNull();
     expect(container.querySelector(".doc-tab")).toBeNull();
+  });
+
+  it("does not prompt unsaved warning when untouched document only changed by cached printer auto-sync", async () => {
+    localStorage.setItem(
+      "label-print.system-printers",
+      JSON.stringify({
+        printers: ["Brother MFC-7360 Printer"],
+        cachedAt: Date.now(),
+      })
+    );
+
+    const { container } = render(<App />);
+
+    await waitFor(() => {
+      const active = useEditorStore
+        .getState()
+        .documents.find((item) => item.id === useEditorStore.getState().activeDocumentId);
+      expect(active?.printerId).toBe("Brother MFC-7360 Printer");
+    });
+
+    const closeWindowButton = container.querySelector<HTMLButtonElement>(".win-btn.close");
+    expect(closeWindowButton).not.toBeNull();
+    fireEvent.click(closeWindowButton!);
+
+    expect(container.querySelector(".confirm-modal")).toBeNull();
+    expect(closeWindowMock).toHaveBeenCalledTimes(1);
+  });
+
+  it("opens launch-associated template file on startup", async () => {
+    const startupSnapshot = {
+      title: "内嵌标题不会覆盖文件名",
+      labelSize: { widthMm: 40, heightMm: 30 },
+      elements: [],
+      calibration: { offsetX: 0, offsetY: 0, scale: 1 },
+      printerId: "Zebra-01",
+      copies: 1,
+    };
+    consumeLaunchFilesMock.mockResolvedValue([
+      {
+        fileName: "开机模板.json",
+        filePath: "C:/tmp/开机模板.json",
+        bytes: Array.from(new TextEncoder().encode(JSON.stringify(startupSnapshot))),
+      },
+    ]);
+
+    const { container } = render(<App />);
+
+    await waitFor(() => {
+      expect(container.querySelector(".command-status")?.textContent).toContain("已打开模板文件：开机模板.json");
+    });
+    const activeTabTitle = container.querySelector<HTMLButtonElement>(".doc-tab.active > button")?.textContent;
+    expect(activeTabTitle).toBe("开机模板");
+  });
+
+  it("opens forwarded launch files while running and keeps single tab per file path", async () => {
+    const firstSnapshot = {
+      title: "Forwarded One",
+      labelSize: { widthMm: 40, heightMm: 30 },
+      elements: [],
+      calibration: { offsetX: 0, offsetY: 0, scale: 1 },
+      printerId: "Zebra-01",
+      copies: 1,
+    };
+    const secondSnapshot = {
+      title: "Forwarded Two",
+      labelSize: { widthMm: 50, heightMm: 35 },
+      elements: [],
+      calibration: { offsetX: 0, offsetY: 0, scale: 1 },
+      printerId: "Zebra-01",
+      copies: 1,
+    };
+
+    const { container } = render(<App />);
+
+    await waitFor(() => {
+      expect(subscribeLaunchFilesMock).toHaveBeenCalledTimes(1);
+      expect(launchFileListeners).toHaveLength(1);
+    });
+
+    const listener = launchFileListeners[0]!;
+    listener([
+      {
+        fileName: "forwarded-one.json",
+        filePath: "C:/tmp/forwarded-one.json",
+        bytes: Array.from(new TextEncoder().encode(JSON.stringify(firstSnapshot))),
+      },
+    ]);
+
+    await waitFor(() => {
+      expect(container.querySelector<HTMLButtonElement>(".doc-tab.active > button")?.textContent).toBe(
+        "forwarded-one"
+      );
+      expect(container.querySelectorAll(".doc-tab")).toHaveLength(1);
+    });
+
+    listener([
+      {
+        fileName: "forwarded-two.json",
+        filePath: "C:/tmp/forwarded-two.json",
+        bytes: Array.from(new TextEncoder().encode(JSON.stringify(secondSnapshot))),
+      },
+    ]);
+
+    await waitFor(() => {
+      expect(container.querySelector<HTMLButtonElement>(".doc-tab.active > button")?.textContent).toBe(
+        "forwarded-two"
+      );
+      expect(container.querySelectorAll(".doc-tab")).toHaveLength(2);
+    });
+
+    listener([
+      {
+        fileName: "forwarded-two.json",
+        filePath: "C:/tmp/forwarded-two.json",
+        bytes: Array.from(new TextEncoder().encode("invalid-json-content")),
+      },
+    ]);
+
+    await waitFor(() => {
+      expect(container.querySelectorAll(".doc-tab")).toHaveLength(2);
+      expect(container.querySelector<HTMLButtonElement>(".doc-tab.active > button")?.textContent).toBe(
+        "forwarded-two"
+      );
+    });
+  });
+
+  it("uses last created label size as default for next creation", () => {
+    const { container } = render(<App />);
+
+    let modal = openNewLabelModal(container);
+    let numberInputs = modal.querySelectorAll<HTMLInputElement>('input[type="number"]');
+    expect(numberInputs).toHaveLength(2);
+
+    fireEvent.change(numberInputs[0]!, { target: { value: "76" } });
+    fireEvent.change(numberInputs[1]!, { target: { value: "38" } });
+
+    const firstConfirmButton = modal.querySelector<HTMLButtonElement>(".primary");
+    expect(firstConfirmButton).not.toBeNull();
+    fireEvent.click(firstConfirmButton!);
+
+    modal = openNewLabelModal(container);
+    numberInputs = modal.querySelectorAll<HTMLInputElement>('input[type="number"]');
+    expect(numberInputs[0]?.value).toBe("76");
+    expect(numberInputs[1]?.value).toBe("38");
+  });
+
+  it("shows common size presets when creating a new label", () => {
+    const { container } = render(<App />);
+
+    const modal = openNewLabelModal(container);
+    const presetSelect = modal.querySelector<HTMLSelectElement>("select");
+    expect(presetSelect).not.toBeNull();
+
+    const options = Array.from(presetSelect!.querySelectorAll("option"));
+    expect(options.length).toBeGreaterThanOrEqual(31);
+    expect(options[1]?.textContent).toBe("40×30");
   });
 
   it("returns to home when clicking logo area", () => {
@@ -152,7 +346,7 @@ describe("App shell", () => {
     expect(container.querySelector(".win-icon-maximize")).not.toBeNull();
   });
 
-  it("uses file picker when clicking open command button", () => {
+  it("uses file picker when clicking open command button", async () => {
     const { container } = render(<App />);
     enterEditorMode(container);
     const fileInput = container.querySelector<HTMLInputElement>('input[type="file"]');
@@ -160,7 +354,68 @@ describe("App shell", () => {
 
     const clickSpy = vi.spyOn(fileInput!, "click");
     fireEvent.click(screen.getByTestId("cmd-open"));
-    expect(clickSpy).toHaveBeenCalledTimes(1);
+    await waitFor(() => {
+      expect(clickSpy).toHaveBeenCalledTimes(1);
+    });
+  });
+
+  it("opens template through tauri dialog and then saves back to original path", async () => {
+    const tauriTemplate = {
+      title: "来自系统对话框",
+      labelSize: { widthMm: 40, heightMm: 30 },
+      elements: [],
+      calibration: { offsetX: 0, offsetY: 0, scale: 1 },
+      printerId: "Zebra-01",
+      copies: 1,
+    };
+    const invokeMock = vi.fn(async (command: string) => {
+      if (command === "list_system_fonts") {
+        return [];
+      }
+      if (command === "open_template_file") {
+        return {
+          fileName: "from-dialog.json",
+          filePath: "D:/projects/labels/from-dialog.json",
+          bytes: Array.from(new TextEncoder().encode(JSON.stringify(tauriTemplate))),
+        };
+      }
+      if (command === "save_template_file") {
+        return { fileName: "from-dialog.json" };
+      }
+      return [];
+    });
+    Object.defineProperty(window, "__TAURI__", {
+      configurable: true,
+      writable: true,
+      value: {
+        core: {
+          invoke: invokeMock,
+        },
+      },
+    });
+
+    const { container } = render(<App />);
+    enterEditorMode(container);
+
+    fireEvent.click(screen.getByTestId("cmd-open"));
+
+    await waitFor(() => {
+      expect(container.querySelector(".command-status")?.textContent).toContain("已打开模板文件：from-dialog.json");
+    });
+
+    fireEvent.click(screen.getByTestId("cmd-save"));
+
+    await waitFor(() => {
+      expect(invokeMock).toHaveBeenCalledWith(
+        "save_template_file",
+        expect.objectContaining({
+          payload: expect.objectContaining({
+            path: "D:/projects/labels/from-dialog.json",
+          }),
+        })
+      );
+    });
+    expect(showSaveFilePickerMock).toHaveBeenCalledTimes(0);
   });
 
   it("opens save dialog when clicking save command button", async () => {
@@ -182,6 +437,233 @@ describe("App shell", () => {
     expect(createWritableMock).toHaveBeenCalledTimes(1);
     expect(writeMock).toHaveBeenCalledTimes(1);
     expect(closeMock).toHaveBeenCalledTimes(1);
+  });
+
+  it("saves launch-opened template back to original path without save dialog", async () => {
+    const startupSnapshot = {
+      title: "开机模板",
+      labelSize: { widthMm: 40, heightMm: 30 },
+      elements: [],
+      calibration: { offsetX: 0, offsetY: 0, scale: 1 },
+      printerId: "Zebra-01",
+      copies: 1,
+    };
+    consumeLaunchFilesMock.mockResolvedValue([
+      {
+        fileName: "开机模板.json",
+        filePath: "C:/tmp/开机模板.json",
+        bytes: Array.from(new TextEncoder().encode(JSON.stringify(startupSnapshot))),
+      },
+    ]);
+
+    const invokeMock = vi.fn().mockResolvedValue({ fileName: "开机模板.json" });
+    Object.defineProperty(window, "__TAURI__", {
+      configurable: true,
+      writable: true,
+      value: {
+        core: {
+          invoke: invokeMock,
+        },
+      },
+    });
+
+    const { container } = render(<App />);
+
+    await waitFor(() => {
+      expect(container.querySelector(".command-status")?.textContent).toContain("已打开模板文件：开机模板.json");
+    });
+
+    fireEvent.click(screen.getByTestId("cmd-save"));
+
+    await waitFor(() => {
+      expect(invokeMock).toHaveBeenCalledWith(
+        "save_template_file",
+        expect.objectContaining({
+          payload: expect.objectContaining({
+            path: "C:/tmp/开机模板.json",
+          }),
+        })
+      );
+    });
+    expect(showSaveFilePickerMock).toHaveBeenCalledTimes(0);
+  });
+
+  it("supports Ctrl+S to save current template", async () => {
+    const createWritableMock = vi.fn().mockResolvedValue({
+      write: vi.fn().mockResolvedValue(undefined),
+      close: vi.fn().mockResolvedValue(undefined),
+    });
+    showSaveFilePickerMock.mockResolvedValue({
+      createWritable: createWritableMock,
+    });
+
+    render(<App />);
+    fireEvent.keyDown(window, { key: "s", ctrlKey: true });
+
+    await waitFor(() => expect(showSaveFilePickerMock).toHaveBeenCalledTimes(1));
+    expect(createWritableMock).toHaveBeenCalledTimes(1);
+  });
+
+  it("supports Ctrl+N to open new label modal", () => {
+    const { container } = render(<App />);
+    fireEvent.keyDown(window, { key: "n", ctrlKey: true });
+    expect(container.querySelector(".new-label-modal")).not.toBeNull();
+  });
+
+  it("supports Ctrl+P to open print modal in editor", () => {
+    const { container } = render(<App />);
+    enterEditorMode(container);
+
+    fireEvent.keyDown(window, { key: "p", ctrlKey: true });
+
+    expect(container.querySelector(".print-modal")).not.toBeNull();
+  });
+
+  it("supports Ctrl+W to close active tab", async () => {
+    const { container } = render(<App />);
+    useEditorStore.getState().createDocument({
+      title: "标签A",
+      labelSize: { widthMm: 40, heightMm: 30 },
+    });
+    useEditorStore.getState().createDocument({
+      title: "标签B",
+      labelSize: { widthMm: 40, heightMm: 30 },
+    });
+
+    await waitFor(() => {
+      expect(container.querySelectorAll(".doc-tab").length).toBeGreaterThanOrEqual(2);
+    });
+    const beforeCloseCount = container.querySelectorAll(".doc-tab").length;
+
+    fireEvent.keyDown(window, { key: "w", ctrlKey: true });
+    await waitFor(() => {
+      const afterCloseCount = container.querySelectorAll(".doc-tab").length;
+      expect(afterCloseCount).toBe(beforeCloseCount - 1);
+    });
+  });
+
+  it("allows closing the only tab and returns to home page", async () => {
+    const { container } = render(<App />);
+
+    const modal = openNewLabelModal(container);
+    const confirmButton = modal.querySelector<HTMLButtonElement>(".primary");
+    expect(confirmButton).not.toBeNull();
+    fireEvent.click(confirmButton!);
+
+    await waitFor(() => {
+      expect(container.querySelectorAll(".doc-tab")).toHaveLength(1);
+    });
+
+    const closeButton = container.querySelector<HTMLButtonElement>(".doc-tab .close-tab");
+    expect(closeButton).not.toBeNull();
+    fireEvent.click(closeButton!);
+
+    await waitFor(() => {
+      expect(container.querySelector(".home-page")).not.toBeNull();
+      expect(container.querySelectorAll(".doc-tab")).toHaveLength(0);
+    });
+  });
+
+  it("prompts when closing an unsaved tab and keeps tab when canceled", async () => {
+    const { container } = render(<App />);
+
+    const modal = openNewLabelModal(container);
+    const confirmButton = modal.querySelector<HTMLButtonElement>(".primary");
+    expect(confirmButton).not.toBeNull();
+    fireEvent.click(confirmButton!);
+
+    useEditorStore.getState().addTextElement();
+    const activeAfterEdit = useEditorStore.getState().documents.find(
+      (item) => item.id === useEditorStore.getState().activeDocumentId
+    );
+    expect(activeAfterEdit?.elements.length).toBeGreaterThan(0);
+
+    const closeButton = container.querySelector<HTMLButtonElement>(".doc-tab .close-tab");
+    expect(closeButton).not.toBeNull();
+    fireEvent.click(closeButton!);
+
+    const confirmDialog = container.querySelector<HTMLElement>(".confirm-modal");
+    expect(confirmDialog).not.toBeNull();
+    expect(confirmDialog?.textContent).toContain("未保存变更");
+
+    const cancelButton = confirmDialog?.querySelector<HTMLButtonElement>(".confirm-cancel");
+    expect(cancelButton).not.toBeNull();
+    fireEvent.click(cancelButton!);
+
+    expect(container.querySelector(".confirm-modal")).toBeNull();
+    expect(container.querySelectorAll(".doc-tab")).toHaveLength(1);
+  });
+
+  it("supports Ctrl+W to close the only tab and return to home page", async () => {
+    const { container } = render(<App />);
+
+    const modal = openNewLabelModal(container);
+    const confirmButton = modal.querySelector<HTMLButtonElement>(".primary");
+    expect(confirmButton).not.toBeNull();
+    fireEvent.click(confirmButton!);
+
+    await waitFor(() => {
+      expect(container.querySelectorAll(".doc-tab")).toHaveLength(1);
+    });
+
+    fireEvent.keyDown(window, { key: "w", ctrlKey: true });
+
+    await waitFor(() => {
+      expect(container.querySelector(".home-page")).not.toBeNull();
+      expect(container.querySelectorAll(".doc-tab")).toHaveLength(0);
+    });
+  });
+
+  it("prompts before closing app when there are unsaved tabs", () => {
+    const { container } = render(<App />);
+
+    const modal = openNewLabelModal(container);
+    const confirmButton = modal.querySelector<HTMLButtonElement>(".primary");
+    expect(confirmButton).not.toBeNull();
+    fireEvent.click(confirmButton!);
+
+    useEditorStore.getState().addTextElement();
+    const activeAfterEdit = useEditorStore.getState().documents.find(
+      (item) => item.id === useEditorStore.getState().activeDocumentId
+    );
+    expect(activeAfterEdit?.elements.length).toBeGreaterThan(0);
+
+    const closeWindowButton = container.querySelector<HTMLButtonElement>(".win-btn.close");
+    expect(closeWindowButton).not.toBeNull();
+    fireEvent.click(closeWindowButton!);
+
+    const confirmDialog = container.querySelector<HTMLElement>(".confirm-modal");
+    expect(confirmDialog).not.toBeNull();
+    expect(confirmDialog?.textContent).toContain("未保存变更");
+
+    const cancelButton = confirmDialog?.querySelector<HTMLButtonElement>(".confirm-cancel");
+    expect(cancelButton).not.toBeNull();
+    fireEvent.click(cancelButton!);
+
+    expect(container.querySelector(".confirm-modal")).toBeNull();
+    expect(closeWindowMock).not.toHaveBeenCalled();
+  });
+
+  it("closes app after confirming unsaved warning dialog", () => {
+    const { container } = render(<App />);
+
+    const modal = openNewLabelModal(container);
+    const confirmButton = modal.querySelector<HTMLButtonElement>(".primary");
+    expect(confirmButton).not.toBeNull();
+    fireEvent.click(confirmButton!);
+
+    useEditorStore.getState().addTextElement();
+    const closeWindowButton = container.querySelector<HTMLButtonElement>(".win-btn.close");
+    expect(closeWindowButton).not.toBeNull();
+    fireEvent.click(closeWindowButton!);
+
+    const confirmDialog = container.querySelector<HTMLElement>(".confirm-modal");
+    expect(confirmDialog).not.toBeNull();
+    const confirmCloseButton = confirmDialog?.querySelector<HTMLButtonElement>(".confirm-confirm");
+    expect(confirmCloseButton).not.toBeNull();
+    fireEvent.click(confirmCloseButton!);
+
+    expect(closeWindowMock).toHaveBeenCalledTimes(1);
   });
 
   it("reuses save target and updates document title after first save", async () => {
@@ -262,6 +744,129 @@ describe("App shell", () => {
     expect(container.querySelectorAll(".home-thumb-element").length).toBeGreaterThan(0);
   });
 
+  it("supports recent search by usage date and allows clear/search actions", async () => {
+    localStorage.setItem(
+      "label-print.recent-opened",
+      JSON.stringify([
+        {
+          id: "recent-a",
+          fileName: "四月标签",
+          saved: true,
+          openedAt: Date.UTC(2026, 3, 5, 10, 20, 0),
+          snapshot: {
+            title: "四月测试",
+            labelSize: { widthMm: 40, heightMm: 30 },
+            elements: [],
+            calibration: { offsetX: 0, offsetY: 0, scale: 1 },
+            printerId: "Zebra-01",
+            copies: 1,
+          },
+        },
+        {
+          id: "recent-b",
+          fileName: "十二月标签",
+          saved: true,
+          openedAt: Date.UTC(2025, 11, 1, 9, 30, 0),
+          snapshot: {
+            title: "十二月测试",
+            labelSize: { widthMm: 40, heightMm: 30 },
+            elements: [],
+            calibration: { offsetX: 0, offsetY: 0, scale: 1 },
+            printerId: "Zebra-01",
+            copies: 1,
+          },
+        },
+      ])
+    );
+
+    const { container } = render(<App />);
+    await waitFor(() => {
+      expect(container.querySelectorAll(".home-recent-card")).toHaveLength(2);
+    });
+
+    const searchInput = container.querySelector<HTMLInputElement>(".home-search input");
+    expect(searchInput).not.toBeNull();
+    fireEvent.change(searchInput!, { target: { value: "2026-04-05" } });
+
+    const clearButton = container.querySelector<HTMLButtonElement>(".home-search-clear");
+    const searchButton = container.querySelector<HTMLButtonElement>(".home-search-submit");
+    expect(clearButton).not.toBeNull();
+    expect(searchButton).not.toBeNull();
+
+    fireEvent.click(searchButton!);
+    await waitFor(() => {
+      expect(container.querySelectorAll(".home-recent-card")).toHaveLength(1);
+      expect(container.querySelector(".home-recent-meta > h4")?.textContent).toBe("四月标签");
+    });
+
+    fireEvent.click(clearButton!);
+    await waitFor(() => {
+      expect(container.querySelectorAll(".home-recent-card")).toHaveLength(2);
+    });
+  });
+
+  it("saves .lpt opened from recent items back to remembered file path", async () => {
+    localStorage.setItem(
+      "label-print.recent-opened",
+      JSON.stringify([
+        {
+          id: "recent-lpt",
+          fileName: "订单标签.lpt",
+          filePath: "D:/labels/store-a/订单标签.lpt",
+          saved: true,
+          openedAt: Date.UTC(2026, 3, 5, 10, 20, 0),
+          snapshot: {
+            title: "订单标签",
+            labelSize: { widthMm: 40, heightMm: 30 },
+            elements: [],
+            calibration: { offsetX: 0, offsetY: 0, scale: 1 },
+            printerId: "Zebra-01",
+            copies: 1,
+          },
+        },
+      ])
+    );
+
+    const invokeMock = vi.fn(async (command: string) => {
+      if (command === "list_system_fonts") {
+        return [];
+      }
+      if (command === "save_template_file") {
+        return { fileName: "订单标签.lpt" };
+      }
+      return [];
+    });
+    Object.defineProperty(window, "__TAURI__", {
+      configurable: true,
+      writable: true,
+      value: {
+        core: {
+          invoke: invokeMock,
+        },
+      },
+    });
+
+    const { container } = render(<App />);
+    await waitFor(() => {
+      expect(container.querySelectorAll(".home-recent-card")).toHaveLength(1);
+    });
+
+    fireEvent.click(container.querySelector<HTMLButtonElement>(".home-recent-card")!);
+    fireEvent.click(screen.getByTestId("cmd-save"));
+
+    await waitFor(() => {
+      expect(invokeMock).toHaveBeenCalledWith(
+        "save_template_file",
+        expect.objectContaining({
+          payload: expect.objectContaining({
+            path: "D:/labels/store-a/订单标签.lpt",
+          }),
+        })
+      );
+    });
+    expect(showSaveFilePickerMock).toHaveBeenCalledTimes(0);
+  });
+
   it("imports .ddl template files into editor snapshot", async () => {
     const { container } = render(<App />);
     const fileInput = container.querySelector<HTMLInputElement>('input[type="file"]');
@@ -326,7 +931,7 @@ describe("App shell", () => {
     fireEvent.change(fileInput!);
 
     await waitFor(() => {
-      expect(container.querySelector(".doc-tab.active > button")?.textContent).toBe("\u91cd\u590d\u6807\u7b7eA");
+      expect(container.querySelector(".doc-tab.active > button")?.textContent).toBe("duplicate-open");
     });
     const tabCountAfterFirstOpen = container.querySelectorAll(".doc-tab").length;
 
@@ -343,10 +948,10 @@ describe("App shell", () => {
 
     await waitFor(() => {
       expect(container.querySelector(".command-status")?.textContent).toContain(
-        "\u5df2\u5207\u6362\u5230\u5df2\u6253\u5f00\u6a21\u677f\uff1a\u91cd\u590d\u6807\u7b7eA\u3002"
+        "已切换到已打开模板：duplicate-open。"
       );
       expect(container.querySelectorAll(".doc-tab")).toHaveLength(tabCountAfterFirstOpen);
-      expect(container.querySelector(".doc-tab.active > button")?.textContent).toBe("\u91cd\u590d\u6807\u7b7eA");
+      expect(container.querySelector(".doc-tab.active > button")?.textContent).toBe("duplicate-open");
     });
   });
 });

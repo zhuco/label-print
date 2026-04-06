@@ -1,4 +1,4 @@
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState, type ChangeEvent } from "react";
 
 import { DataImportDrawer } from "../data-import/DataImportDrawer";
 import { CanvasStage } from "./CanvasStage";
@@ -21,6 +21,7 @@ export function EditorPage({ systemFonts = [] }: EditorPageProps) {
   const deleteSelection = useEditorStore((state) => state.deleteSelection);
 
   const [importOpen, setImportOpen] = useState(false);
+  const imageInputRef = useRef<HTMLInputElement | null>(null);
 
   useEffect(() => {
     const onKeyDown = (event: KeyboardEvent) => {
@@ -42,17 +43,52 @@ export function EditorPage({ systemFonts = [] }: EditorPageProps) {
     return () => window.removeEventListener("keydown", onKeyDown);
   }, [deleteSelection]);
 
+  const onAddImageFromDisk = () => {
+    imageInputRef.current?.click();
+  };
+
+  const onImageFileChange = (event: ChangeEvent<HTMLInputElement>) => {
+    const file = event.target.files?.[0];
+    if (!file) {
+      return;
+    }
+    if (!file.type.startsWith("image/")) {
+      event.target.value = "";
+      return;
+    }
+
+    const reader = new FileReader();
+    reader.onload = () => {
+      if (typeof reader.result !== "string" || !reader.result.startsWith("data:image/")) {
+        return;
+      }
+      addImageElement({
+        name: getImageNameFromFile(file.name),
+        dataUrl: reader.result,
+      });
+    };
+    reader.readAsDataURL(file);
+    event.target.value = "";
+  };
+
   return (
     <section className="editor-page">
+      <input
+        ref={imageInputRef}
+        type="file"
+        accept="image/*"
+        onChange={onImageFileChange}
+        style={{ display: "none" }}
+      />
       <div className="workspace editor-workspace">
         <aside className="panel left toolbar-panel">
           <LeftPalette
             onAddText={addTextElement}
             onAddBarcode={addBarcodeElement}
-            onAddImage={addImageElement}
+            onAddImage={onAddImageFromDisk}
             onAddQrcode={addQrcodeElement}
-            onAddShape={addShapeElement}
-            onAddIcon={addIconElement}
+            onAddShape={(presetId) => addShapeElement({ presetId })}
+            onAddIcon={(presetId) => addIconElement({ presetId })}
           />
         </aside>
 
@@ -78,4 +114,9 @@ export function EditorPage({ systemFonts = [] }: EditorPageProps) {
       ) : null}
     </section>
   );
+}
+
+function getImageNameFromFile(fileName: string): string {
+  const normalized = fileName.trim().replace(/\.[^/.]+$/, "");
+  return normalized || "图片";
 }

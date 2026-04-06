@@ -38,3 +38,20 @@ fn saves_template_and_job_metadata() {
     assert_eq!(job.calibration_json, "{}");
     assert_eq!(job.payload_json, "{\"batch\":1}");
 }
+
+#[test]
+fn auto_creates_template_when_missing_template_id_is_submitted() {
+    let db = open_test_db();
+    let template_repo = TemplateRepository::new(&db);
+    let job_repo = JobRepository::new(&db);
+
+    let job_id = job_repo
+        .create_with_metadata(1, 3, "Microsoft Print to PDF", 1, "{}", "{\"batch\":2}")
+        .expect("job should save even if template id is missing");
+    let job = job_repo.get(job_id).expect("job should exist");
+
+    assert!(job.template_id > 0);
+    let templates = template_repo.list().expect("template list should load");
+    assert!(!templates.is_empty());
+    assert!(templates.iter().any(|tpl| tpl.id == job.template_id));
+}

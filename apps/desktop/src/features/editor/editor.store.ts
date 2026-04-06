@@ -9,6 +9,12 @@ import {
   createShapeElement,
   createTextElement,
 } from "./core/model";
+import {
+  getIconPreset,
+  getShapePreset,
+  toIconPresetBindingValue,
+  toShapePresetBindingValue,
+} from "./core/visual-presets";
 import type {
   AlignMode,
   BarcodeConfig,
@@ -71,6 +77,19 @@ type RectPatch = Partial<{
   rotation: number;
 }>;
 
+type AddImageElementInput = {
+  name?: string;
+  dataUrl?: string;
+};
+
+type AddShapeElementInput = {
+  presetId?: string;
+};
+
+type AddIconElementInput = {
+  presetId?: string;
+};
+
 type EditorState = {
   documents: EditorDocument[];
   activeDocumentId: string;
@@ -81,10 +100,10 @@ type EditorState = {
   setDocumentFileMeta: (id: string, filePath: string | null, fileName?: string | null) => void;
   addTextElement: () => void;
   addBarcodeElement: () => void;
-  addImageElement: () => void;
+  addImageElement: (input?: AddImageElementInput) => void;
   addQrcodeElement: () => void;
-  addShapeElement: () => void;
-  addIconElement: () => void;
+  addShapeElement: (input?: AddShapeElementInput) => void;
+  addIconElement: (input?: AddIconElementInput) => void;
   setLabelSize: (patch: Partial<LabelSize>) => void;
   setSelection: (ids: string[]) => void;
   toggleSelection: (id: string) => void;
@@ -308,7 +327,11 @@ export function selectActiveDocument(state: EditorState): EditorDocument {
   return state.documents.find((item) => item.id === state.activeDocumentId) ?? state.documents[0];
 }
 
-const initialDocument = createDocument({ title: "新建标签1", labelSize: { widthMm: 40, heightMm: 30 } });
+function createInitialDocument(): EditorDocument {
+  return createDocument({ title: "新建标签1", labelSize: { widthMm: 40, heightMm: 30 } });
+}
+
+const initialDocument = createInitialDocument();
 
 export const useEditorStore = create<EditorState>((set) => ({
   documents: [initialDocument],
@@ -335,15 +358,19 @@ export const useEditorStore = create<EditorState>((set) => ({
 
   closeDocument: (id) =>
     set((state) => {
-      if (state.documents.length <= 1) {
+      if (!state.documents.some((document) => document.id === id)) {
         return state;
+      }
+
+      if (state.documents.length <= 1) {
+        const fresh = createInitialDocument();
+        return {
+          documents: [fresh],
+          activeDocumentId: fresh.id,
+        };
       }
 
       const nextDocuments = state.documents.filter((document) => document.id !== id);
-      if (nextDocuments.length === state.documents.length) {
-        return state;
-      }
-
       const nextActiveId =
         state.activeDocumentId === id
           ? nextDocuments[Math.max(0, nextDocuments.length - 1)].id
@@ -434,7 +461,7 @@ export const useEditorStore = create<EditorState>((set) => ({
       ),
     })),
 
-  addImageElement: () =>
+  addImageElement: (input) =>
     set((state) => ({
       documents: updateActiveDocument(
         state,
@@ -442,10 +469,18 @@ export const useEditorStore = create<EditorState>((set) => ({
           const adaptive = calcAdaptiveVisualElement(document.labelSize, 0.58, 14, 28);
           const element = createImageElement({
             id: nextElementId("image"),
+            name: input?.name?.trim() ? input.name.trim() : undefined,
             xMm: adaptive.xMm,
             yMm: adaptive.yMm,
             widthMm: adaptive.widthMm,
             heightMm: adaptive.heightMm * 0.72,
+            binding:
+              input?.dataUrl && input.dataUrl.trim()
+                ? {
+                    mode: "fixed",
+                    fixedValue: input.dataUrl.trim(),
+                  }
+                : undefined,
           });
           return {
             ...document,
@@ -480,18 +515,26 @@ export const useEditorStore = create<EditorState>((set) => ({
       ),
     })),
 
-  addShapeElement: () =>
+  addShapeElement: (input) =>
     set((state) => ({
       documents: updateActiveDocument(
         state,
         (document) => {
+          const preset = input?.presetId ? getShapePreset(input.presetId) : null;
           const adaptive = calcAdaptiveVisualElement(document.labelSize, 0.56, 12, 26);
           const element = createShapeElement({
             id: nextElementId("shape"),
+            name: preset?.label ?? undefined,
             xMm: adaptive.xMm,
             yMm: adaptive.yMm,
             widthMm: adaptive.widthMm,
             heightMm: Math.max(8, adaptive.heightMm * 0.58),
+            binding: preset
+              ? {
+                  mode: "fixed",
+                  fixedValue: toShapePresetBindingValue(preset.id),
+                }
+              : undefined,
           });
           return {
             ...document,
@@ -503,18 +546,26 @@ export const useEditorStore = create<EditorState>((set) => ({
       ),
     })),
 
-  addIconElement: () =>
+  addIconElement: (input) =>
     set((state) => ({
       documents: updateActiveDocument(
         state,
         (document) => {
+          const preset = input?.presetId ? getIconPreset(input.presetId) : null;
           const adaptive = calcAdaptiveVisualElement(document.labelSize, 0.34, 8, 14);
           const element = createIconElement({
             id: nextElementId("icon"),
+            name: preset?.label ?? undefined,
             xMm: adaptive.xMm,
             yMm: adaptive.yMm,
             widthMm: adaptive.widthMm,
             heightMm: adaptive.heightMm,
+            binding: preset
+              ? {
+                  mode: "fixed",
+                  fixedValue: toIconPresetBindingValue(preset.id),
+                }
+              : undefined,
           });
           return {
             ...document,
@@ -793,3 +844,13 @@ export const useEditorStore = create<EditorState>((set) => ({
       }),
     })),
 }));
+
+export function resetEditorStoreForTests() {
+  elementSequence = 1;
+  documentSequence = 1;
+  const first = createInitialDocument();
+  useEditorStore.setState({
+    documents: [first],
+    activeDocumentId: first.id,
+  });
+}

@@ -1,4 +1,4 @@
-import { ChangeEvent, useEffect, useMemo, useState } from "react";
+import { ChangeEvent, useMemo } from "react";
 
 type NewLabelModalProps = {
   open: boolean;
@@ -31,6 +31,21 @@ export function NewLabelModal({
   onHeightChange,
   onConfirm,
 }: NewLabelModalProps) {
+  const selectedPresetLabel = useMemo(
+    () =>
+      COMMON_LABEL_SIZES.find((item) => item.widthMm === widthMm && item.heightMm === heightMm)?.label ?? "",
+    [heightMm, widthMm]
+  );
+
+  const onPresetChange = (event: ChangeEvent<HTMLSelectElement>) => {
+    const nextPreset = COMMON_LABEL_SIZES.find((item) => item.label === event.target.value);
+    if (!nextPreset) {
+      return;
+    }
+    onWidthChange(nextPreset.widthMm);
+    onHeightChange(nextPreset.heightMm);
+  };
+
   const preview = useMemo(() => {
     const ratio = Math.min(PREVIEW_MAX / Math.max(widthMm, 1), PREVIEW_MAX / Math.max(heightMm, 1));
     return {
@@ -58,6 +73,17 @@ export function NewLabelModal({
             <label>
               标签标题
               <input value={title} onChange={(event) => onTitleChange(event.target.value)} />
+            </label>
+            <label>
+              常用尺寸
+              <select value={selectedPresetLabel} onChange={onPresetChange}>
+                <option value="">自定义</option>
+                {COMMON_LABEL_SIZES.map((item) => (
+                  <option key={item.label} value={item.label}>
+                    {item.label}
+                  </option>
+                ))}
+              </select>
             </label>
             <label>
               宽度(mm)
