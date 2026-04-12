@@ -371,6 +371,10 @@ export function PrintSubmitModal({
                               symbology={element.barcode.symbology}
                               className="print-preview-barcode-svg"
                               showText={false}
+                              mmToPx={previewMmToPx}
+                              moduleWidthMm={element.barcode.moduleWidth}
+                              quietZoneMm={element.barcode.quietZone}
+                              heightMm={Math.max(3, element.heightMm)}
                             />
                           </div>
                           {element.barcode.textPosition === "bottom" ? (

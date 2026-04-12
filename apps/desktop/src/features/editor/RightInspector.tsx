@@ -222,7 +222,8 @@ export function RightInspector({ systemFonts }: RightInspectorProps) {
               <span className="visually-hidden">字号</span>
               <input
                 type="number"
-                min={1}
+                min={0.1}
+                step={0.1}
                 value={Number.isFinite(selectedElement.textStyle.fontSize) ? selectedElement.textStyle.fontSize : 1}
                 aria-label="字号"
                 title="字号"
@@ -383,7 +384,7 @@ export function RightInspector({ systemFonts }: RightInspectorProps) {
             <NumericInput
               label="最小高(mm)"
               value={selectedElement.barcode.minHeight}
-              min={1}
+              min={3}
               step={0.1}
               onChange={(value) => updateSelectedBarcode({ minHeight: value })}
             />

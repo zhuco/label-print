@@ -1,4 +1,4 @@
-﻿use std::collections::HashSet;
+use std::collections::HashSet;
 use std::fs;
 use std::path::{Path, PathBuf};
 use std::process::Command;
@@ -49,7 +49,10 @@ pub struct DirectPrintResult {
 }
 
 #[tauri::command]
-pub fn enqueue_print_job(payload: EnqueuePayload, state: tauri::State<AppState>) -> Result<i64, String> {
+pub fn enqueue_print_job(
+    payload: EnqueuePayload,
+    state: tauri::State<AppState>,
+) -> Result<i64, String> {
     let conn = state
         .conn
         .lock()
@@ -60,7 +63,10 @@ pub fn enqueue_print_job(payload: EnqueuePayload, state: tauri::State<AppState>)
 }
 
 #[tauri::command]
-pub fn submit_print_task(payload: SubmitPrintTaskPayload, state: tauri::State<AppState>) -> Result<i64, String> {
+pub fn submit_print_task(
+    payload: SubmitPrintTaskPayload,
+    state: tauri::State<AppState>,
+) -> Result<i64, String> {
     let conn = state
         .conn
         .lock()
@@ -188,7 +194,8 @@ pub fn resume_print_job(id: i64, state: tauri::State<AppState>) -> Result<(), St
         .lock()
         .map_err(|_| "db lock poisoned".to_string())?;
     let repo = JobRepository::new(&conn);
-    repo.set_status(id, "running").map_err(|err| err.to_string())
+    repo.set_status(id, "running")
+        .map_err(|err| err.to_string())
 }
 
 #[tauri::command]
@@ -198,7 +205,8 @@ pub fn cancel_print_job(id: i64, state: tauri::State<AppState>) -> Result<(), St
         .lock()
         .map_err(|_| "db lock poisoned".to_string())?;
     let repo = JobRepository::new(&conn);
-    repo.set_status(id, "cancelled").map_err(|err| err.to_string())
+    repo.set_status(id, "cancelled")
+        .map_err(|err| err.to_string())
 }
 
 fn build_temp_path(prefix: &str, extension: &str) -> PathBuf {
@@ -207,14 +215,21 @@ fn build_temp_path(prefix: &str, extension: &str) -> PathBuf {
         .duration_since(UNIX_EPOCH)
         .unwrap_or_default()
         .as_millis();
-    path.push(format!("{prefix}-{}-{millis}.{extension}", std::process::id()));
+    path.push(format!(
+        "{prefix}-{}-{millis}.{extension}",
+        std::process::id()
+    ));
     path
 }
 
 fn sanitize_file_stem(input: &str) -> String {
     let fallback = "label-output";
     let trimmed = input.trim();
-    let source = if trimmed.is_empty() { fallback } else { trimmed };
+    let source = if trimmed.is_empty() {
+        fallback
+    } else {
+        trimmed
+    };
 
     let mut output = String::with_capacity(source.len());
     for ch in source.chars() {
@@ -253,7 +268,10 @@ fn build_default_pdf_output_path(title: &str) -> Result<PathBuf, String> {
                 break;
             }
             Err(err) => {
-                last_error = Some(format!("create pdf output directory failed at {}: {err}", dir.display()));
+                last_error = Some(format!(
+                    "create pdf output directory failed at {}: {err}",
+                    dir.display()
+                ));
             }
         }
     }
@@ -410,9 +428,16 @@ fn export_preview_image_to_pdf(
 
 fn run_powershell_script(script: &str, args: &[String]) -> Result<std::process::Output, String> {
     let script_path = build_temp_path("label-print-script", "ps1");
-    fs::write(&script_path, script).map_err(|err| format!("write powershell script failed: {err}"))?;
+    fs::write(&script_path, script)
+        .map_err(|err| format!("write powershell script failed: {err}"))?;
 
     let mut command = Command::new("powershell");
+    #[cfg(target_os = "windows")]
+    {
+        use std::os::windows::process::CommandExt;
+        const CREATE_NO_WINDOW: u32 = 0x0800_0000;
+        command.creation_flags(CREATE_NO_WINDOW);
+    }
     command
         .arg("-NoProfile")
         .arg("-NonInteractive")
@@ -480,7 +505,8 @@ mod tests {
 
     #[test]
     fn parses_chinese_printer_name_without_mojibake() {
-        let json = r#"["Brother MFC-7360 Printer","\u5bfc\u51fa\u4e3aWPS PDF","Microsoft Print to PDF"]"#;
+        let json =
+            r#"["Brother MFC-7360 Printer","\u5bfc\u51fa\u4e3aWPS PDF","Microsoft Print to PDF"]"#;
         let output = base64::engine::general_purpose::STANDARD.encode(json.as_bytes());
         let parsed = parse_printers_from_powershell_stdout(output.as_bytes())
             .expect("should parse printer output");
@@ -496,8 +522,7 @@ mod tests {
 
     #[test]
     fn keeps_unique_non_empty_printer_names() {
-        let json =
-            r#"["\u5bfc\u51fa\u4e3aWPS PDF"," ","\u5bfc\u51fa\u4e3aWPS PDF","Microsoft Print to PDF"]"#;
+        let json = r#"["\u5bfc\u51fa\u4e3aWPS PDF"," ","\u5bfc\u51fa\u4e3aWPS PDF","Microsoft Print to PDF"]"#;
         let output = base64::engine::general_purpose::STANDARD.encode(json.as_bytes());
         let parsed = parse_printers_from_powershell_stdout(output.as_bytes())
             .expect("should parse printer output");
@@ -516,10 +541,9 @@ mod tests {
             0x89, 0x50, 0x4E, 0x47, 0x0D, 0x0A, 0x1A, 0x0A, // PNG signature
             0x00, 0x00, 0x00, 0x0D, 0x49, 0x48, 0x44, 0x52, // IHDR
             0x00, 0x00, 0x00, 0x01, 0x00, 0x00, 0x00, 0x01, // 1x1
-            0x08, 0x06, 0x00, 0x00, 0x00, 0x1F, 0x15, 0xC4, 0x89,
-            0x00, 0x00, 0x00, 0x0A, 0x49, 0x44, 0x41, 0x54, // IDAT
-            0x78, 0x9C, 0x63, 0x00, 0x01, 0x00, 0x00, 0x05, 0x00, 0x01,
-            0x0D, 0x0A, 0x2D, 0xB4,
+            0x08, 0x06, 0x00, 0x00, 0x00, 0x1F, 0x15, 0xC4, 0x89, 0x00, 0x00, 0x00, 0x0A, 0x49,
+            0x44, 0x41, 0x54, // IDAT
+            0x78, 0x9C, 0x63, 0x00, 0x01, 0x00, 0x00, 0x05, 0x00, 0x01, 0x0D, 0x0A, 0x2D, 0xB4,
             0x00, 0x00, 0x00, 0x00, 0x49, 0x45, 0x4E, 0x44, // IEND
             0xAE, 0x42, 0x60, 0x82,
         ];
@@ -529,5 +553,3 @@ mod tests {
         assert!(pdf.len() > 100, "pdf bytes too small");
     }
 }
-
-

@@ -41,4 +41,35 @@ describe("print ipc", () => {
 
     expect(getCachedSystemPrinters()).toEqual(["Brother MFC-7360 Printer", "导出为WPS PDF"]);
   });
+
+  it("drops stale cached printers by default", () => {
+    localStorage.setItem(
+      "label-print.system-printers",
+      JSON.stringify({
+        printers: ["Old Printer"],
+        cachedAt: Date.now() - 31 * 60 * 1000,
+      })
+    );
+
+    expect(getCachedSystemPrinters()).toEqual([]);
+  });
+
+  it("deduplicates concurrent system printer requests", async () => {
+    let resolveInvoke!: (value: string[]) => void;
+    invokeMock.mockImplementationOnce(
+      () =>
+        new Promise<string[]>((resolve) => {
+          resolveInvoke = resolve;
+        })
+    );
+
+    const first = listSystemPrinters();
+    const second = listSystemPrinters();
+
+    expect(invokeMock).toHaveBeenCalledTimes(1);
+    resolveInvoke(["Printer-A"]);
+
+    await expect(first).resolves.toEqual(["Printer-A"]);
+    await expect(second).resolves.toEqual(["Printer-A"]);
+  });
 });

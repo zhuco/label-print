@@ -11,6 +11,13 @@ export type SnapTargets = {
   y: number[];
 };
 
+export type SelectionRectMm = {
+  leftMm: number;
+  topMm: number;
+  rightMm: number;
+  bottomMm: number;
+};
+
 export function buildSnapTargets(elements: EditorElement[], labelSize: LabelSize): SnapTargets {
   const xTargets = new Set<number>([0, labelSize.widthMm / 2, labelSize.widthMm]);
   const yTargets = new Set<number>([0, labelSize.heightMm / 2, labelSize.heightMm]);
@@ -119,6 +126,23 @@ export function alignSelectedElements(
     }
     return { ...element, yMm: bounds.bottom - element.heightMm };
   });
+}
+
+export function selectElementsByRect(elements: EditorElement[], rect: SelectionRectMm): string[] {
+  const left = Math.min(rect.leftMm, rect.rightMm);
+  const right = Math.max(rect.leftMm, rect.rightMm);
+  const top = Math.min(rect.topMm, rect.bottomMm);
+  const bottom = Math.max(rect.topMm, rect.bottomMm);
+
+  return elements
+    .filter((element) => {
+      const elementLeft = element.xMm;
+      const elementRight = element.xMm + element.widthMm;
+      const elementTop = element.yMm;
+      const elementBottom = element.yMm + element.heightMm;
+      return left <= elementRight && right >= elementLeft && top <= elementBottom && bottom >= elementTop;
+    })
+    .map((element) => element.id);
 }
 
 type SnapAnchor = {

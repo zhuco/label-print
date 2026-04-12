@@ -39,7 +39,10 @@ const DEFAULT_NEW_LABEL_SIZE: LabelSize = { widthMm: 40, heightMm: 30 };
 const HOME_RECENT_STORAGE_KEY = "label-print.recent-opened";
 const HOME_RECENT_LIMIT = 24;
 const LAST_NEW_LABEL_SIZE_STORAGE_KEY = "label-print.last-new-label-size";
+const SOFTWARE_DEFAULT_PRINTER_STORAGE_KEY = "label-print.default-printer";
 const TITLEBAR_IGNORE_SELECTOR = "button, input, textarea, select, a, [data-no-titlebar-action]";
+const PRINTER_PREWARM_DELAY_MS = 4000;
+const PRINTER_PREWARM_IDLE_TIMEOUT_MS = 2000;
 
 type LocalFontMeta = {
   family?: string;
@@ -67,6 +70,14 @@ type SaveFilePickerWindow = Window & {
       accept: Record<string, string[]>;
     }>;
   }) => Promise<SaveFileHandle>;
+};
+
+type IdleCallbackWindow = Window & {
+  requestIdleCallback?: (
+    callback: (deadline: { didTimeout: boolean; timeRemaining: () => number }) => void,
+    options?: { timeout?: number }
+  ) => number;
+  cancelIdleCallback?: (handle: number) => void;
 };
 
 type SaveTemplateResult = {
@@ -214,6 +225,25 @@ function writeLastNewLabelSize(size: LabelSize) {
   localStorage.setItem(LAST_NEW_LABEL_SIZE_STORAGE_KEY, JSON.stringify(size));
 }
 
+function readSoftwareDefaultPrinterId(): string {
+  if (typeof localStorage === "undefined") {
+    return "";
+  }
+  return localStorage.getItem(SOFTWARE_DEFAULT_PRINTER_STORAGE_KEY)?.trim() || "";
+}
+
+function writeSoftwareDefaultPrinterId(printerId: string) {
+  if (typeof localStorage === "undefined") {
+    return;
+  }
+  const normalized = printerId.trim();
+  if (!normalized) {
+    localStorage.removeItem(SOFTWARE_DEFAULT_PRINTER_STORAGE_KEY);
+    return;
+  }
+  localStorage.setItem(SOFTWARE_DEFAULT_PRINTER_STORAGE_KEY, normalized);
+}
+
 function parsePositive(value: number, fallback: number): number {
   if (!Number.isFinite(value)) {
     return fallback;
@@ -277,6 +307,11 @@ function resolveKnownDocumentPath(filePath: string | null): string | null {
     return null;
   }
   return normalized;
+}
+
+function isDdlDocumentPath(filePath: string | null): boolean {
+  const normalized = filePath?.trim().toLocaleLowerCase("en-US") || "";
+  return normalized.endsWith(".ddl");
 }
 
 function buildRecentEntryLookupKey(fileName: string, filePath: string | null): string {
@@ -548,6 +583,7 @@ export default function App() {
   const [submitting, setSubmitting] = useState(false);
   const [loadingPrinters, setLoadingPrinters] = useState(false);
   const [availablePrinters, setAvailablePrinters] = useState<string[]>(initialCachedPrinters);
+  const [softwareDefaultPrinterId, setSoftwareDefaultPrinterId] = useState<string>(() => readSoftwareDefaultPrinterId());
   const [hasLoadedSystemPrinters, setHasLoadedSystemPrinters] = useState(false);
   const [systemPrinterCount, setSystemPrinterCount] = useState(0);
   const [usingCachedPrinters, setUsingCachedPrinters] = useState(initialCachedPrinters.length > 0);
@@ -573,8 +609,26 @@ export default function App() {
   >(async () => {});
   const availablePrintersRef = useRef<string[]>(initialCachedPrinters);
   const printerRefreshPendingRef = useRef(false);
+  const hasLoadedSystemPrintersRef = useRef(hasLoadedSystemPrinters);
 
   const printableRows = useMemo(() => (rows.length > 0 ? rows : [{ code: "123456789" }]), [rows]);
+  const printDialogPrinters = useMemo(() => {
+    const normalized = softwareDefaultPrinterId.trim();
+    if (!normalized || availablePrinters.includes(normalized)) {
+      return availablePrinters;
+    }
+    return [normalized, ...availablePrinters];
+  }, [availablePrinters, softwareDefaultPrinterId]);
+  const activePrintDialogPrinterId = useMemo(() => {
+    const normalized = softwareDefaultPrinterId.trim();
+    if (normalized) {
+      return normalized;
+    }
+    if (availablePrinters.length > 0) {
+      return availablePrinters[0];
+    }
+    return activeDocument.printerId;
+  }, [activeDocument.printerId, availablePrinters, softwareDefaultPrinterId]);
   const canUndo = activeDocument.undoStack.length > 0;
   const canRedo = activeDocument.redoStack.length > 0;
   const homeVisibleItems = useMemo(() => {
@@ -671,6 +725,20 @@ export default function App() {
     closeDocumentNow(request.documentId);
   };
 
+  const saveAndCloseConfirmTab = async () => {
+    const request = pendingCloseConfirm;
+    if (!request || request.kind !== "tab") {
+      return;
+    }
+
+    setPendingCloseConfirm(null);
+    const saved = await onSaveTemplate(undefined, request.documentId);
+    if (!saved) {
+      return;
+    }
+    closeDocumentNow(request.documentId);
+  };
+
   const focusOpenedDocumentByFileName = (fileName: string): boolean => {
     const lookupKey = normalizeDocumentLookupKey(fileName);
     if (!lookupKey) {
@@ -750,6 +818,23 @@ export default function App() {
     availablePrintersRef.current = availablePrinters;
   }, [availablePrinters]);
 
+  useEffect(() => {
+    if (availablePrinters.length === 0) {
+      return;
+    }
+    const normalized = softwareDefaultPrinterId.trim();
+    if (normalized && availablePrinters.includes(normalized)) {
+      return;
+    }
+    const nextDefault = availablePrinters[0];
+    setSoftwareDefaultPrinterId(nextDefault);
+    writeSoftwareDefaultPrinterId(nextDefault);
+  }, [availablePrinters, softwareDefaultPrinterId]);
+
+  useEffect(() => {
+    hasLoadedSystemPrintersRef.current = hasLoadedSystemPrinters;
+  }, [hasLoadedSystemPrinters]);
+
   const refreshSystemPrinters = useCallback(async (background = true) => {
     if (printerRefreshPendingRef.current) {
       return;
@@ -795,7 +880,42 @@ export default function App() {
   }, [setPrinterConfig]);
 
   useEffect(() => {
-    void refreshSystemPrinters(true);
+    let cancelled = false;
+    let delayHandle: number | null = null;
+    let idleHandle: number | null = null;
+
+    const runWarmup = () => {
+      if (cancelled || hasLoadedSystemPrintersRef.current) {
+        return;
+      }
+      void refreshSystemPrinters(true);
+    };
+
+    const scheduleIdleWarmup = () => {
+      if (cancelled || hasLoadedSystemPrintersRef.current) {
+        return;
+      }
+      const idleWindow = window as IdleCallbackWindow;
+      if (typeof idleWindow.requestIdleCallback === "function") {
+        idleHandle = idleWindow.requestIdleCallback(() => {
+          runWarmup();
+        }, { timeout: PRINTER_PREWARM_IDLE_TIMEOUT_MS });
+        return;
+      }
+      runWarmup();
+    };
+
+    delayHandle = window.setTimeout(scheduleIdleWarmup, PRINTER_PREWARM_DELAY_MS);
+    return () => {
+      cancelled = true;
+      if (delayHandle !== null) {
+        window.clearTimeout(delayHandle);
+      }
+      const idleWindow = window as IdleCallbackWindow;
+      if (idleHandle !== null && typeof idleWindow.cancelIdleCallback === "function") {
+        idleWindow.cancelIdleCallback(idleHandle);
+      }
+    };
   }, [refreshSystemPrinters]);
 
   useEffect(() => {
@@ -1038,6 +1158,15 @@ export default function App() {
     }
   };
 
+  const onSelectDefaultPrinterForSoftware = (value: string) => {
+    const normalized = value.trim();
+    if (!normalized) {
+      return;
+    }
+    setSoftwareDefaultPrinterId(normalized);
+    writeSoftwareDefaultPrinterId(normalized);
+  };
+
   const writeTemplateBundleToHandle = async (bundle: Uint8Array, handle: SaveFileHandle) => {
     const writable = await handle.createWritable();
     await writable.write(toOwnedArrayBuffer(bundle));
@@ -1113,29 +1242,41 @@ export default function App() {
     };
   };
 
-  const onSaveTemplate = async (name?: string) => {
+  const onSaveTemplate = async (name?: string, documentId?: string): Promise<boolean> => {
+    const targetState = useEditorStore.getState();
+    const targetDocumentId = documentId ?? targetState.activeDocumentId;
+    const document = targetState.documents.find((item) => item.id === targetDocumentId);
+    if (!document) {
+      setToolbarStatus("当前标签不存在，无法保存。");
+      return false;
+    }
+
     try {
       const explicitName = name?.trim() || "";
-      const snapshot = buildTemplateSnapshot(activeDocument);
+      const snapshot = buildTemplateSnapshot(document);
       const packed = packTemplateBundle(snapshot);
 
       let result: SaveTemplateResult;
       if (!explicitName) {
-        const knownHandle = savedFileHandlesRef.current.get(activeDocument.id);
-        const knownPath = resolveKnownDocumentPath(activeDocument.filePath);
+        if (isDdlDocumentPath(document.filePath)) {
+          result = await saveTemplateBundleWithDialog(packed, document.title);
+        } else {
+        const knownHandle = savedFileHandlesRef.current.get(document.id);
+        const knownPath = resolveKnownDocumentPath(document.filePath);
         if (knownHandle) {
           result = await saveTemplateBundleToKnownTarget(packed, knownHandle);
         } else if (knownPath) {
           result = await saveTemplateBundleToKnownPath(packed, knownPath);
         } else {
-          result = await saveTemplateBundleWithDialog(packed, activeDocument.title);
+          result = await saveTemplateBundleWithDialog(packed, document.title);
+        }
         }
       } else {
         result = await saveTemplateBundleWithDialog(packed, explicitName);
       }
 
       if (result.handle) {
-        savedFileHandlesRef.current.set(activeDocument.id, result.handle);
+        savedFileHandlesRef.current.set(document.id, result.handle);
       }
 
       const savedTitle = normalizeRecentFileName(result.fileName, explicitName || snapshot.title);
@@ -1145,17 +1286,17 @@ export default function App() {
       };
       const nextFilePath =
         result.mode === "path"
-          ? result.filePath || activeDocument.filePath
+          ? result.filePath || document.filePath
           : result.handle
             ? result.fileName
-            : activeDocument.filePath;
+            : document.filePath;
 
       setDocumentFileMeta(
-        activeDocument.id,
+        document.id,
         nextFilePath,
         savedTitle
       );
-      markDocumentSavedBySnapshot(activeDocument.id, savedSnapshot);
+      markDocumentSavedBySnapshot(document.id, savedSnapshot);
       rememberRecentOpened(savedTitle, savedSnapshot, nextFilePath ?? null);
 
       if (result.mode === "download") {
@@ -1165,8 +1306,10 @@ export default function App() {
       } else {
         setToolbarStatus("模板已保存到文件。");
       }
+      return true;
     } catch (error) {
       setToolbarStatus(`保存失败：${toChineseErrorMessage(error)}`);
+      return false;
     }
   };
   const onSaveAsTemplate = async () => {
@@ -1571,6 +1714,18 @@ export default function App() {
     }
   };
 
+  const onDeleteRecentFromHome = (id: string) => {
+    const target = recentOpenedItems.find((item) => item.id === id);
+    if (!target) {
+      setToolbarStatus("最近记录不存在或已失效。");
+      return;
+    }
+    const next = recentOpenedItems.filter((item) => item.id !== id);
+    setRecentOpenedItems(next);
+    writeRecentOpenedItems(next);
+    setToolbarStatus(`已删除最近记录：${target.fileName}`);
+  };
+
   const onCopySelection = () => {
     const selected = activeDocument.elements.filter((element) =>
       activeDocument.selectedIds.includes(element.id)
@@ -1640,38 +1795,40 @@ export default function App() {
           <span className="brand-name">恒策标签条码打印软件</span>
         </button>
 
-        <div className="title-tabs">
-          {visibleDocuments.map((document) => (
-            <div
-              key={document.id}
-              className={`doc-tab ${document.id === activeDocument.id ? "active" : ""}`}
-              data-no-titlebar-action
-            >
-              <button
-                type="button"
-                onClick={() => {
-                  setActiveDocument(document.id);
-                  setActivePage("editor");
-                }}
+        <div className="titlebar-main">
+          <div className="title-tabs">
+            {visibleDocuments.map((document) => (
+              <div
+                key={document.id}
+                className={`doc-tab ${document.id === activeDocument.id ? "active" : ""}`}
+                data-no-titlebar-action
               >
-                {document.title}
-              </button>
-              <button
-                type="button"
-                className="close-tab"
-                onClick={() => closeDocumentWithPrompt(document.id)}
-                aria-label={`关闭${document.title}`}
-              >
-                ×
-              </button>
-            </div>
-          ))}
-          <button type="button" className="new-tab" onClick={openNewLabelModal}>
-            + 新建标签
-          </button>
-        </div>
+                <button
+                  type="button"
+                  onClick={() => {
+                    setActiveDocument(document.id);
+                    setActivePage("editor");
+                  }}
+                >
+                  {document.title}
+                </button>
+                <button
+                  type="button"
+                  className="close-tab"
+                  onClick={() => closeDocumentWithPrompt(document.id)}
+                  aria-label={`关闭${document.title}`}
+                >
+                  ×
+                </button>
+              </div>
+            ))}
+            <button type="button" className="new-tab" onClick={openNewLabelModal}>
+              + 新建标签
+            </button>
+          </div>
 
-        <div className="titlebar-spacer" />
+          <div className="titlebar-spacer" />
+        </div>
 
         <div className="titlebar-actions">
           <button type="button" className="win-btn" aria-label="最小化" onClick={() => void minimizeWindow()}>
@@ -1703,17 +1860,37 @@ export default function App() {
                     openNewLabelModal();
                   }}
                 >
-                  新建标签
+                  新建
                 </button>
                 <button
                   type="button"
                   className="tool-ghost file-menu-item"
                   onClick={() => {
                     setFileMenuOpen(false);
-                    onPickTemplateFile();
+                    void onPickTemplateFile();
                   }}
                 >
                   打开
+                </button>
+                <button
+                  type="button"
+                  className="tool-ghost file-menu-item"
+                  onClick={() => {
+                    setFileMenuOpen(false);
+                    templateFileInputRef.current?.click();
+                  }}
+                >
+                  导入
+                </button>
+                <button
+                  type="button"
+                  className="tool-ghost file-menu-item"
+                  onClick={() => {
+                    setFileMenuOpen(false);
+                    void onSaveTemplate();
+                  }}
+                >
+                  保存
                 </button>
                 <button
                   type="button"
@@ -1730,21 +1907,10 @@ export default function App() {
                   className="tool-ghost file-menu-item"
                   onClick={() => {
                     setFileMenuOpen(false);
-                    onExportTemplateLpt();
+                    setPrintOpen(true);
                   }}
                 >
-                  导出 .lpt
-                </button>
-
-                <button
-                  type="button"
-                  className="tool-ghost file-menu-item"
-                  onClick={() => {
-                    setFileMenuOpen(false);
-                    onExportTemplateJson();
-                  }}
-                >
-                  导出 JSON
+                  打印
                 </button>
               </div>
             ) : null}
@@ -1826,6 +1992,7 @@ export default function App() {
           onCreateLabel={openNewLabelModal}
           onOpenLabel={onPickTemplateFile}
           onOpenRecent={onOpenRecentFromHome}
+          onDeleteRecent={onDeleteRecentFromHome}
         />
       )}
 
@@ -1935,6 +2102,11 @@ export default function App() {
               <button type="button" className="tool-ghost confirm-cancel" onClick={dismissCloseConfirm}>
                 返回继续编辑
               </button>
+              {pendingCloseConfirm.kind === "tab" ? (
+                <button type="button" className="tool-ghost confirm-save-close" onClick={() => void saveAndCloseConfirmTab()}>
+                  保存并关闭
+                </button>
+              ) : null}
               <button type="button" className="primary confirm-confirm confirm-modal-danger" onClick={acceptCloseConfirm}>
                 {pendingCloseConfirm.kind === "app" ? "确认关闭程序" : "仍要关闭标签"}
               </button>
@@ -1947,7 +2119,7 @@ export default function App() {
         open={printOpen}
         title={activeDocument.title}
         labelSize={activeDocument.labelSize}
-        printers={availablePrinters}
+        printers={printDialogPrinters}
         printerHint={
           loadingPrinters
             ? "正在读取本机打印机列表..."
@@ -1957,7 +2129,7 @@ export default function App() {
                 ? "已加载缓存打印机列表，后台同步中..."
                 : "未读取到本机系统打印机，当前仅显示模板中保存的打印机。请在桌面版环境点击“刷新系统打印机”。"
         }
-        printerId={activeDocument.printerId}
+        printerId={activePrintDialogPrinterId}
         copies={activeDocument.copies}
         elements={activeDocument.elements}
         previewRecord={printableRows[0] ?? {}}
@@ -1966,7 +2138,7 @@ export default function App() {
         loadingPrinters={loadingPrinters}
         onClose={() => setPrintOpen(false)}
         onRefreshPrinters={() => void refreshSystemPrinters(false)}
-        onPrinterChange={(value) => setPrinterConfig({ printerId: value })}
+        onPrinterChange={onSelectDefaultPrinterForSoftware}
         onCopiesChange={(value) => setPrinterConfig({ copies: value })}
         onConfirm={onSubmitPrint}
       />

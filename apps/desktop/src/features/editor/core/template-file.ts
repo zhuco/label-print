@@ -13,10 +13,20 @@ const DEFAULT_TEXT_LINE_HEIGHT = 1.2;
 const DDL_BARCODE_MAP: Record<string, BarcodeSymbology> = {
   CODE_128: "CODE128",
   CODE128: "CODE128",
+  CODE_128A: "CODE128A",
+  CODE128A: "CODE128A",
+  CODE_128B: "CODE128B",
+  CODE128B: "CODE128B",
+  CODE_128C: "CODE128C",
+  CODE128C: "CODE128C",
   CODE_39: "CODE39",
   CODE39: "CODE39",
   CODE_93: "CODE93",
   CODE93: "CODE93",
+  EAN_2: "EAN2",
+  EAN2: "EAN2",
+  EAN_5: "EAN5",
+  EAN5: "EAN5",
   EAN_13: "EAN13",
   EAN13: "EAN13",
   EAN_8: "EAN8",
@@ -246,10 +256,10 @@ function mapTextAlign(value: string | null): TextStyle["align"] {
 
 function mapBarcodeSymbology(value: string | null): BarcodeSymbology {
   if (!value) {
-    return "CODE128";
+    return "CODE128A";
   }
   const normalized = value.trim().toUpperCase().replace(/[-\s]/g, "_");
-  return DDL_BARCODE_MAP[normalized] ?? "CODE128";
+  return DDL_BARCODE_MAP[normalized] ?? "CODE128A";
 }
 
 function mapRotationToDirection(rotation: number): PrintDirection {
@@ -427,7 +437,7 @@ export function parseDdlTemplateSnapshot(content: string, fallbackName: string):
           textPosition: mapBarcodeTextPosition(drawObject.getAttribute("textposition")),
           quietZone: normalizeQuietZone(drawObject.getAttribute("quietzone")),
           checksumEnabled: parseBoolean(drawObject.getAttribute("checkcode")),
-          minHeight: parsePositive(drawObject.getAttribute("h"), 8, 1),
+          minHeight: parsePositive(drawObject.getAttribute("h"), 3, 1),
           direction: mapRotationToDirection(rotation),
         },
       });

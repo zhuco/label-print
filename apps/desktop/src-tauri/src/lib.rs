@@ -1,8 +1,11 @@
 pub mod commands;
 pub mod db;
+pub mod ocr_sidecar;
 pub mod repo;
 
 use std::collections::HashSet;
+use std::env;
+use std::fs;
 use std::path::{Path, PathBuf};
 use std::sync::Mutex;
 
@@ -16,6 +19,53 @@ pub struct AppState {
 }
 
 const LAUNCH_FILES_EVENT: &str = "launch-files";
+const APP_DATA_DIR_NAME: &str = "com.opensource.labelprint";
+
+fn read_first_non_empty_env(keys: &[&str]) -> Option<PathBuf> {
+    keys.iter()
+        .find_map(|key| env::var(key).ok())
+        .map(|value| value.trim().to_string())
+        .filter(|value| !value.is_empty())
+        .map(PathBuf::from)
+}
+
+fn resolve_user_data_dir() -> Option<PathBuf> {
+    #[cfg(target_os = "windows")]
+    {
+        read_first_non_empty_env(&["LOCALAPPDATA", "APPDATA"])
+    }
+
+    #[cfg(not(target_os = "windows"))]
+    {
+        if let Some(xdg_data_home) = read_first_non_empty_env(&["XDG_DATA_HOME"]) {
+            return Some(xdg_data_home);
+        }
+        read_first_non_empty_env(&["HOME"]).map(|home| home.join(".local").join("share"))
+    }
+}
+
+fn resolve_db_path() -> PathBuf {
+    if let Some(base_dir) = resolve_user_data_dir() {
+        let app_data_dir = base_dir.join(APP_DATA_DIR_NAME);
+        if fs::create_dir_all(&app_data_dir).is_ok() {
+            return app_data_dir.join("label-print.db");
+        }
+    }
+    PathBuf::from("label-print.db")
+}
+
+fn migrate_legacy_db_if_needed(target: &Path) {
+    let legacy = PathBuf::from("label-print.db");
+    if target == legacy.as_path() || target.exists() || !legacy.exists() {
+        return;
+    }
+    if let Some(parent) = target.parent() {
+        if fs::create_dir_all(parent).is_err() {
+            return;
+        }
+    }
+    let _ = fs::copy(legacy, target);
+}
 
 fn is_supported_launch_file(path: &Path) -> bool {
     matches!(
@@ -131,7 +181,10 @@ fn append_pending_launch_files(app: &tauri::AppHandle, launch_files: &[String]) 
 }
 
 pub fn run() {
-    let conn = db::open_or_create("label-print.db").expect("database should open");
+    let db_path = resolve_db_path();
+    migrate_legacy_db_if_needed(&db_path);
+    let conn = db::open_or_create(&db_path)
+        .unwrap_or_else(|error| panic!("database should open at {}: {}", db_path.display(), error));
     let launch_files = collect_launch_files();
 
     tauri::Builder::default()
@@ -168,9 +221,14 @@ pub fn run() {
             commands::window_commands::window_toggle_maximize,
             commands::window_commands::window_close,
             commands::window_commands::window_start_drag,
+            commands::recognition_commands::recognize_image_native,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");
+}
+
+pub fn run_ocr_sidecar() -> i32 {
+    ocr_sidecar::run_stdio_loop()
 }
 
 #[cfg(test)]
@@ -229,7 +287,10 @@ mod tests {
         assert_eq!(from_uri.len(), 1);
         assert!(from_uri[0].ends_with("quoted.lpt"));
 
-        let from_relative = collect_launch_files_from_args_with_base(vec![relative], Some(Path::new(temp_dir.path())));
+        let from_relative = collect_launch_files_from_args_with_base(
+            vec![relative],
+            Some(Path::new(temp_dir.path())),
+        );
         assert_eq!(from_relative.len(), 1);
         assert!(from_relative[0].ends_with("quoted.lpt"));
     }

@@ -9,13 +9,21 @@ type BarcodePreviewProps = {
   symbology?: BarcodeSymbology;
   className?: string;
   showText?: boolean;
+  mmToPx?: number;
+  moduleWidthMm?: number;
+  quietZoneMm?: number;
+  heightMm?: number;
 };
 
 export function BarcodePreview({
   value,
-  symbology = "CODE128",
+  symbology = "CODE128A",
   className,
   showText = true,
+  mmToPx = 8,
+  moduleWidthMm = 0.33,
+  quietZoneMm = 1,
+  heightMm = 8,
 }: BarcodePreviewProps) {
   const svgRef = useRef<SVGSVGElement | null>(null);
 
@@ -26,6 +34,15 @@ export function BarcodePreview({
     }
 
     const barcodeValue = normalizeBarcodeValue(value || "", symbology);
+    const safeMmToPx = Number.isFinite(mmToPx) && mmToPx > 0 ? mmToPx : 8;
+    const safeModuleWidthMm = Number.isFinite(moduleWidthMm) && moduleWidthMm > 0 ? moduleWidthMm : 0.33;
+    const safeQuietZoneMm = Number.isFinite(quietZoneMm) && quietZoneMm >= 0 ? quietZoneMm : 1;
+    const safeHeightMm = Number.isFinite(heightMm) && heightMm > 0 ? heightMm : 8;
+    const barcodeHeightPx = Math.max(6, safeHeightMm * safeMmToPx);
+    const moduleWidthPx = Math.max(0.5, safeModuleWidthMm * safeMmToPx);
+    const quietZonePx = Math.max(0, safeQuietZoneMm * safeMmToPx);
+
+    svg.setAttribute("preserveAspectRatio", "none");
     if (!supportsCanvasContext()) {
       renderFallback(svg, barcodeValue, showText);
       return;
@@ -35,16 +52,16 @@ export function BarcodePreview({
       JsBarcode(svg, barcodeValue, {
         format: symbology,
         displayValue: showText,
-        margin: 0,
+        margin: quietZonePx,
         fontSize: 10,
-        height: 36,
-        width: 1.1,
+        height: barcodeHeightPx,
+        width: moduleWidthPx,
         textMargin: 2,
       });
     } catch {
       renderFallback(svg, barcodeValue, showText);
     }
-  }, [showText, value, symbology]);
+  }, [heightMm, mmToPx, moduleWidthMm, quietZoneMm, showText, value, symbology]);
 
   return <svg ref={svgRef} className={className} />;
 }

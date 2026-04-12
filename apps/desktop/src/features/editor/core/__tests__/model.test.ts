@@ -24,6 +24,8 @@ describe("element model defaults", () => {
       mode: "fixed",
       fixedValue: "123456789",
     });
+    expect(element.barcode.symbology).toBe("CODE128A");
+    expect(element.textStyle.fontSize).toBe(2);
   });
 
   it("image element should default to 图片", () => {

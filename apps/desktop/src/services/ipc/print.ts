@@ -3,6 +3,9 @@ import { invoke } from "@tauri-apps/api/core";
 import type { SubmitTaskPayload } from "../../features/editor/core/print-task";
 
 const SYSTEM_PRINTER_CACHE_KEY = "label-print.system-printers";
+const SYSTEM_PRINTER_CACHE_MAX_AGE_MS = 30 * 60 * 1000;
+
+let inFlightSystemPrintersRequest: Promise<string[]> | null = null;
 
 type SystemPrinterCache = {
   printers: string[];
@@ -65,7 +68,7 @@ function writeCachedSystemPrinters(printers: string[]) {
   localStorage.setItem(SYSTEM_PRINTER_CACHE_KEY, JSON.stringify(payload));
 }
 
-export function getCachedSystemPrinters(): string[] {
+export function getCachedSystemPrinters(maxAgeMs = SYSTEM_PRINTER_CACHE_MAX_AGE_MS): string[] {
   if (typeof localStorage === "undefined") {
     return [];
   }
@@ -75,6 +78,13 @@ export function getCachedSystemPrinters(): string[] {
   }
   try {
     const parsed = JSON.parse(raw) as Partial<SystemPrinterCache>;
+    const cachedAt = Number(parsed.cachedAt);
+    if (Number.isFinite(cachedAt) && cachedAt > 0) {
+      const age = Date.now() - cachedAt;
+      if (age > maxAgeMs) {
+        return [];
+      }
+    }
     return normalizePrinterNames(parsed.printers);
   } catch {
     return [];
@@ -102,14 +112,25 @@ export async function submitPrintTask(payload: SubmitTaskPayload): Promise<numbe
 }
 
 export async function listSystemPrinters(): Promise<string[]> {
-  try {
-    const printers = await invoke<string[]>("list_system_printers");
-    const normalized = normalizePrinterNames(printers);
-    writeCachedSystemPrinters(normalized);
-    return normalized;
-  } catch {
-    return [];
+  if (inFlightSystemPrintersRequest) {
+    return inFlightSystemPrintersRequest;
   }
+
+  const request = (async () => {
+    try {
+      const printers = await invoke<string[]>("list_system_printers");
+      const normalized = normalizePrinterNames(printers);
+      writeCachedSystemPrinters(normalized);
+      return normalized;
+    } catch {
+      return [];
+    } finally {
+      inFlightSystemPrintersRequest = null;
+    }
+  })();
+
+  inFlightSystemPrintersRequest = request;
+  return request;
 }
 
 export async function submitDirectPrint(payload: DirectPrintPayload): Promise<DirectPrintResult> {

@@ -2,8 +2,13 @@ export type ElementType = "text" | "barcode" | "image" | "qrcode" | "shape" | "i
 
 export const BARCODE_SYMBOLOGIES = [
   "CODE128",
+  "CODE128A",
+  "CODE128B",
+  "CODE128C",
   "CODE39",
   "CODE93",
+  "EAN2",
+  "EAN5",
   "EAN13",
   "EAN8",
   "UPC",

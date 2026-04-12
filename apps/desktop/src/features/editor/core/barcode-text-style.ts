@@ -77,28 +77,14 @@ function getAlignTransformOrigin(align: TextStyle["align"]): "left" | "center" |
 
 export function buildBarcodeTextStyle(textStyle: TextStyle, input: BuildBarcodeTextStyleInput): CSSProperties {
   const safeMmToPx = Number.isFinite(input.mmToPx) && input.mmToPx > 0 ? input.mmToPx : 8;
-  const safeHeightMm = Number.isFinite(input.heightMm) ? Math.max(0, input.heightMm) : 0;
   const safeWidthMm = Number.isFinite(input.widthMm) ? Math.max(0, input.widthMm) : 0;
-  const safeMinBarcodeHeightMm = Number.isFinite(input.minBarcodeHeightMm ?? 0)
-    ? Math.max(0, input.minBarcodeHeightMm ?? 0)
-    : 0;
-  const safeTextGapMm = Number.isFinite(input.textGapMm ?? 0) ? Math.max(0, input.textGapMm ?? 0) : 0;
   const safeText = (input.text ?? "").replace(/\r?\n/g, " ");
 
-  const heightPx = Math.max(1, safeHeightMm * safeMmToPx);
   const widthPx = Math.max(1, safeWidthMm * safeMmToPx);
   const lineHeight = clamp(textStyle.lineHeight, 1, 1.4);
-
-  // Keep enough vertical space for barcode bars while still allowing visible text enlargement.
-  const maxByRatioPx = Math.max(1, heightPx * 0.26);
-  const reservedBarcodePx = safeMinBarcodeHeightMm * safeMmToPx;
-  const maxByReservedBarcodePx =
-    reservedBarcodePx > 0
-      ? Math.max(1, (heightPx - reservedBarcodePx - safeTextGapMm * safeMmToPx) / lineHeight)
-      : maxByRatioPx;
-  const maxFontPx = Math.max(1, Math.min(maxByRatioPx, maxByReservedBarcodePx));
-  const requestedFontPx = Number.isFinite(textStyle.fontSize) ? textStyle.fontSize * safeMmToPx : 1;
-  const fontPx = clamp(requestedFontPx, 1, maxFontPx);
+  const minReadableFontPx = 3;
+  const requestedFontPx = Number.isFinite(textStyle.fontSize) ? textStyle.fontSize * safeMmToPx : minReadableFontPx;
+  const fontPx = Math.max(minReadableFontPx, requestedFontPx);
 
   const requestedLetterSpacingPx = Number.isFinite(textStyle.letterSpacing) ? textStyle.letterSpacing * safeMmToPx : 0;
   const letterSpacingPx = clamp(requestedLetterSpacingPx, 0, fontPx * 0.3);
@@ -109,7 +95,7 @@ export function buildBarcodeTextStyle(textStyle: TextStyle, input: BuildBarcodeT
       ? measuredWidthPx
       : estimateSingleLineUnits(safeText) * fontPx * 0.62 + Math.max(0, safeText.length - 1) * letterSpacingPx;
   const horizontalScale =
-    estimatedWidthPx > widthPx ? clamp(widthPx / estimatedWidthPx, 0.2, 1) : 1;
+    estimatedWidthPx > widthPx ? clamp(widthPx / estimatedWidthPx, 0.05, 1) : 1;
 
   return {
     fontFamily: textStyle.fontFamily,

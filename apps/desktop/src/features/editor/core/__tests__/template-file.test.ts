@@ -58,6 +58,19 @@ const DDL_NEWLINE_SAMPLE = `<?xml version="1.0" encoding="UTF-8"?>
   </paper>
 </DLabel>`;
 
+const DDL_UNKNOWN_BARCODE_SAMPLE = `<?xml version="1.0" encoding="UTF-8"?>
+<DLabel source="pc" version="3.2.8">
+  <paper w="40" h="30">
+    <labelobjects>
+      <drawobj itemtype="7" barcodetype="UNKNOWN_BARCODE" l="2" t="12" w="28" h="10" rotate="0">
+        <textlist>
+          <text value="12345" />
+        </textlist>
+      </drawobj>
+    </labelobjects>
+  </paper>
+</DLabel>`;
+
 function buildSnapshot(): TemplateSnapshot {
   return {
     title: "Asset Demo",
@@ -224,6 +237,16 @@ describe("template bundle", () => {
     expect(text?.type).toBe("text");
     if (text?.type === "text" && text.binding.mode === "fixed") {
       expect(text.binding.fixedValue).toBe("Line A\nLine B\nLine C\nLine D\nLine E\nLine F");
+    }
+  });
+
+  it("falls back to CODE128A when ddl barcode type is unknown", () => {
+    const snapshot = parseDdlTemplateSnapshot(DDL_UNKNOWN_BARCODE_SAMPLE, "Unknown Barcode DDL");
+    const barcode = snapshot?.elements.find((item) => item.type === "barcode");
+
+    expect(barcode?.type).toBe("barcode");
+    if (barcode?.type === "barcode") {
+      expect(barcode.barcode.symbology).toBe("CODE128A");
     }
   });
 

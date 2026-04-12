@@ -2,8 +2,13 @@ import type { BarcodeSymbology } from "./types";
 
 export const BARCODE_SYMBOLOGY_OPTIONS: Array<{ value: BarcodeSymbology; label: string }> = [
   { value: "CODE128", label: "CODE128" },
+  { value: "CODE128A", label: "CODE128-A" },
+  { value: "CODE128B", label: "CODE128-B" },
+  { value: "CODE128C", label: "CODE128-C" },
   { value: "CODE39", label: "CODE39" },
   { value: "CODE93", label: "CODE93" },
+  { value: "EAN2", label: "EAN-2" },
+  { value: "EAN5", label: "EAN-5" },
   { value: "EAN13", label: "EAN13" },
   { value: "EAN8", label: "EAN8" },
   { value: "UPC", label: "UPC-A" },
@@ -21,8 +26,13 @@ export const BARCODE_SYMBOLOGY_OPTIONS: Array<{ value: BarcodeSymbology; label: 
 
 const DEFAULT_BARCODE_VALUES: Record<BarcodeSymbology, string> = {
   CODE128: "123456789",
+  CODE128A: "123456789",
+  CODE128B: "ABC123",
+  CODE128C: "123456",
   CODE39: "ABC123",
   CODE93: "ABC123",
+  EAN2: "12",
+  EAN5: "12345",
   EAN13: "690123456789",
   EAN8: "1234567",
   UPC: "12345678901",
@@ -49,6 +59,10 @@ export function normalizeBarcodeValue(value: string, symbology: BarcodeSymbology
   }
 
   switch (symbology) {
+    case "EAN2":
+      return pickDigits(raw, 2);
+    case "EAN5":
+      return pickDigits(raw, 5);
     case "EAN13":
       return pickDigits(raw, 12);
     case "EAN8":
@@ -74,6 +88,11 @@ export function normalizeBarcodeValue(value: string, symbology: BarcodeSymbology
     case "CODE39":
       return normalizeCode39(raw);
     case "CODE93":
+    case "CODE128A":
+    case "CODE128B":
+      return raw;
+    case "CODE128C":
+      return normalizeCode128C(raw);
     case "CODE128":
     default:
       return raw;
@@ -120,4 +139,12 @@ function normalizeCode39(input: string): string {
   const upper = input.toUpperCase();
   const safe = upper.replace(/[^0-9A-Z\-.$/+% ]/g, "");
   return safe || "ABC123";
+}
+
+function normalizeCode128C(input: string): string {
+  const digits = input.replace(/\D/g, "");
+  if (!digits) {
+    return "12";
+  }
+  return digits.length % 2 === 0 ? digits : `${digits}0`;
 }

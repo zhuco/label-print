@@ -1,4 +1,11 @@
-import { useMemo, type ChangeEvent, type KeyboardEvent } from "react";
+import {
+  useEffect,
+  useMemo,
+  useState,
+  type ChangeEvent,
+  type KeyboardEvent as ReactKeyboardEvent,
+  type MouseEvent as ReactMouseEvent,
+} from "react";
 
 import type { TemplateSnapshot } from "../editor/core/template-snapshot";
 import { RecentLabelThumbnail } from "./RecentLabelThumbnail";
@@ -21,6 +28,7 @@ type HomePageProps = {
   onCreateLabel: () => void;
   onOpenLabel: () => void;
   onOpenRecent: (id: string) => void;
+  onDeleteRecent: (id: string) => void;
 };
 
 export function HomePage({
@@ -30,7 +38,30 @@ export function HomePage({
   onCreateLabel,
   onOpenLabel,
   onOpenRecent,
+  onDeleteRecent,
 }: HomePageProps) {
+  const [contextMenu, setContextMenu] = useState<{ id: string; x: number; y: number } | null>(null);
+
+  useEffect(() => {
+    if (!contextMenu) {
+      return;
+    }
+    const closeMenu = () => setContextMenu(null);
+    const onEscape = (event: KeyboardEvent) => {
+      if (event.key === "Escape") {
+        setContextMenu(null);
+      }
+    };
+    window.addEventListener("mousedown", closeMenu);
+    window.addEventListener("contextmenu", closeMenu);
+    window.addEventListener("keydown", onEscape);
+    return () => {
+      window.removeEventListener("mousedown", closeMenu);
+      window.removeEventListener("contextmenu", closeMenu);
+      window.removeEventListener("keydown", onEscape);
+    };
+  }, [contextMenu]);
+
   const openedFormatter = useMemo(
     () =>
       new Intl.DateTimeFormat("zh-CN", {
@@ -61,7 +92,7 @@ export function HomePage({
     onSearchKeywordChange(searchKeyword.trim());
   };
 
-  const onSearchKeyDown = (event: KeyboardEvent<HTMLInputElement>) => {
+  const onSearchKeyDown = (event: ReactKeyboardEvent<HTMLInputElement>) => {
     if (event.key !== "Enter") {
       return;
     }
@@ -71,6 +102,24 @@ export function HomePage({
 
   const onSearchClear = () => {
     onSearchKeywordChange("");
+  };
+
+  const onRecentCardContextMenu = (event: ReactMouseEvent<HTMLButtonElement>, id: string) => {
+    event.preventDefault();
+    event.stopPropagation();
+    setContextMenu({
+      id,
+      x: event.clientX,
+      y: event.clientY,
+    });
+  };
+
+  const onDeleteRecentItem = () => {
+    if (!contextMenu) {
+      return;
+    }
+    onDeleteRecent(contextMenu.id);
+    setContextMenu(null);
   };
 
   return (
@@ -122,7 +171,11 @@ export function HomePage({
                 key={item.id}
                 type="button"
                 className="home-recent-card"
-                onClick={() => onOpenRecent(item.id)}
+                onClick={() => {
+                  setContextMenu(null);
+                  onOpenRecent(item.id);
+                }}
+                onContextMenu={(event) => onRecentCardContextMenu(event, item.id)}
               >
                 <div className="home-recent-thumb">
                   <RecentLabelThumbnail snapshot={item.snapshot} />
@@ -137,6 +190,22 @@ export function HomePage({
             ))}
           </div>
         )}
+        {contextMenu ? (
+          <div
+            className="canvas-context-menu home-recent-context-menu"
+            style={{ left: contextMenu.x, top: contextMenu.y }}
+            onClick={(event) => event.stopPropagation()}
+            onContextMenu={(event) => event.preventDefault()}
+          >
+            <button
+              type="button"
+              className="tool-ghost canvas-context-item home-recent-context-delete"
+              onClick={onDeleteRecentItem}
+            >
+              删除记录
+            </button>
+          </div>
+        ) : null}
       </section>
     </section>
   );

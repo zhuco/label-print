@@ -17,7 +17,7 @@ import { QrcodePreview } from "./QrcodePreview";
 import { resolveBindingValue } from "./core/binding";
 import { buildBarcodeTextStyle } from "./core/barcode-text-style";
 import { DEFAULT_FONT_OPTIONS, type FontOption, withCurrentFont } from "./core/font-options";
-import { buildSnapTargets, snapElementPosition, type SnapTargets } from "./core/layout";
+import { buildSnapTargets, selectElementsByRect, snapElementPosition, type SnapTargets } from "./core/layout";
 import { buildRulerTicks, isMajorRulerTick, shouldShowRulerLabel } from "./core/ruler";
 import { buildTextDecoration, computeSingleLineScaleX } from "./core/text-style";
 import type { EditorElement, TextStyle } from "./core/types";
@@ -30,6 +30,7 @@ const SNAP_THRESHOLD_MM = 0.9;
 const MIN_ZOOM = 0.4;
 const MAX_ZOOM = 3;
 const MIN_ELEMENT_MM = 1;
+const DEFAULT_CUSTOM_PRESET_CATEGORIES = ["常用", "物流", "生产", "零售", "医药", "其他"];
 
 type DragState = {
   startClientX: number;
@@ -61,6 +62,19 @@ type EditingState = {
   value: string;
 };
 
+type MarqueeState = {
+  startX: number;
+  startY: number;
+  currentX: number;
+  currentY: number;
+  baseSelectedIds: string[];
+};
+
+type ContextMenuState = {
+  clientX: number;
+  clientY: number;
+};
+
 const RESIZE_HANDLES: ResizeHandle[] = ["nw", "n", "ne", "w", "e", "sw", "s", "se"];
 
 type CanvasStageProps = {
@@ -82,15 +96,23 @@ export function CanvasStage({ systemFonts }: CanvasStageProps) {
   const updateSelectedTextStyle = useEditorStore((state) => state.updateSelectedTextStyle);
   const updateElementRect = useEditorStore((state) => state.updateElementRect);
   const pushHistoryCheckpoint = useEditorStore((state) => state.pushHistoryCheckpoint);
+  const saveSelectionAsCustomPreset = useEditorStore((state) => state.saveSelectionAsCustomPreset);
+  const customPresets = useEditorStore((state) => state.customPresets);
 
   const rows = useDataImportStore((state) => state.rows);
 
   const [dragState, setDragState] = useState<DragState | null>(null);
   const [resizeState, setResizeState] = useState<ResizeState | null>(null);
+  const [marqueeState, setMarqueeState] = useState<MarqueeState | null>(null);
+  const [contextMenu, setContextMenu] = useState<ContextMenuState | null>(null);
+  const [savePresetModalOpen, setSavePresetModalOpen] = useState(false);
+  const [customPresetName, setCustomPresetName] = useState("");
+  const [customPresetCategory, setCustomPresetCategory] = useState(DEFAULT_CUSTOM_PRESET_CATEGORIES[0]);
   const [zoom, setZoom] = useState(1);
   const [editing, setEditing] = useState<EditingState | null>(null);
   const editingRef = useRef<EditingState | null>(null);
   const scrollRef = useRef<HTMLDivElement | null>(null);
+  const stageRef = useRef<HTMLDivElement | null>(null);
 
   const elementsRef = useRef(elements);
   const labelSizeRef = useRef(labelSize);
@@ -113,6 +135,15 @@ export function CanvasStage({ systemFonts }: CanvasStageProps) {
     editingRef.current = editing;
   }, [editing]);
 
+  useEffect(() => {
+    if (!contextMenu) {
+      return;
+    }
+    const onAnyMouseDown = () => setContextMenu(null);
+    window.addEventListener("mousedown", onAnyMouseDown);
+    return () => window.removeEventListener("mousedown", onAnyMouseDown);
+  }, [contextMenu]);
+
   const previewRecord = rows[0] ?? {};
   const hasSelection = selectedIds.length > 0;
   const selectedElement =
@@ -130,6 +161,10 @@ export function CanvasStage({ systemFonts }: CanvasStageProps) {
     const base = systemFonts.length > 0 ? systemFonts : DEFAULT_FONT_OPTIONS;
     return withCurrentFont(base, selectedElement?.textStyle.fontFamily ?? "");
   }, [selectedElement?.textStyle.fontFamily, systemFonts]);
+  const customPresetCategories = useMemo(() => {
+    const fromSaved = customPresets.map((item) => item.category.trim()).filter((item) => item.length > 0);
+    return [...new Set([...DEFAULT_CUSTOM_PRESET_CATEGORIES, ...fromSaved])];
+  }, [customPresets]);
 
   const stageStyle = useMemo(
     () => ({
@@ -427,6 +462,132 @@ export function CanvasStage({ systemFonts }: CanvasStageProps) {
     }
   };
 
+  const onStageMouseDown = (event: ReactMouseEvent<HTMLDivElement>) => {
+    if (event.button !== 0) {
+      return;
+    }
+    if (editingRef.current || resizeState || dragState) {
+      return;
+    }
+
+    const stage = stageRef.current;
+    if (!stage) {
+      return;
+    }
+    const point = toStagePoint(event.clientX, event.clientY, stage);
+    const baseSelectedIds = event.shiftKey ? [...selectedIdsRef.current] : [];
+    if (!event.shiftKey) {
+      clearSelection();
+    }
+    setContextMenu(null);
+    setMarqueeState({
+      startX: point.x,
+      startY: point.y,
+      currentX: point.x,
+      currentY: point.y,
+      baseSelectedIds,
+    });
+  };
+
+  const onStageContextMenu = (event: ReactMouseEvent<HTMLDivElement>) => {
+    if (selectedIdsRef.current.length === 0) {
+      return;
+    }
+    event.preventDefault();
+    setContextMenu({
+      clientX: event.clientX,
+      clientY: event.clientY,
+    });
+  };
+
+  const onElementContextMenu = (event: ReactMouseEvent, element: EditorElement) => {
+    event.preventDefault();
+    event.stopPropagation();
+    if (!selectedIdsRef.current.includes(element.id)) {
+      setSelection([element.id]);
+    }
+    setContextMenu({
+      clientX: event.clientX,
+      clientY: event.clientY,
+    });
+  };
+
+  const openSavePresetModal = () => {
+    const selected = selectedIdsRef.current;
+    if (selected.length === 0) {
+      setContextMenu(null);
+      return;
+    }
+    const defaultName =
+      selected.length === 1
+        ? elementsRef.current.find((element) => element.id === selected[0])?.name ?? "自定义图形"
+        : `组合图形(${selected.length})`;
+    setCustomPresetName(defaultName);
+    setCustomPresetCategory(customPresetCategories[0] ?? "常用");
+    setSavePresetModalOpen(true);
+    setContextMenu(null);
+  };
+
+  const confirmSavePreset = () => {
+    const saved = saveSelectionAsCustomPreset({
+      name: customPresetName,
+      category: customPresetCategory,
+    });
+    if (!saved) {
+      return;
+    }
+    setSavePresetModalOpen(false);
+  };
+
+  useEffect(() => {
+    if (!marqueeState) {
+      return;
+    }
+
+    const onMove = (event: MouseEvent) => {
+      const stage = stageRef.current;
+      if (!stage) {
+        return;
+      }
+      const point = toStagePoint(event.clientX, event.clientY, stage);
+      setMarqueeState((current) =>
+        current
+          ? {
+              ...current,
+              currentX: point.x,
+              currentY: point.y,
+            }
+          : current
+      );
+    };
+
+    const onUp = () => {
+      const widthPx = Math.abs(marqueeState.currentX - marqueeState.startX);
+      const heightPx = Math.abs(marqueeState.currentY - marqueeState.startY);
+      if (widthPx >= 2 || heightPx >= 2) {
+        const selected = selectElementsByRect(elementsRef.current, {
+          leftMm: Math.min(marqueeState.startX, marqueeState.currentX) / mmToPx,
+          topMm: Math.min(marqueeState.startY, marqueeState.currentY) / mmToPx,
+          rightMm: Math.max(marqueeState.startX, marqueeState.currentX) / mmToPx,
+          bottomMm: Math.max(marqueeState.startY, marqueeState.currentY) / mmToPx,
+        });
+        const merged =
+          marqueeState.baseSelectedIds.length > 0
+            ? [...new Set([...marqueeState.baseSelectedIds, ...selected])]
+            : selected;
+        setSelection(merged);
+      }
+      setMarqueeState(null);
+    };
+
+    window.addEventListener("mousemove", onMove);
+    window.addEventListener("mouseup", onUp);
+    return () => {
+      window.removeEventListener("mousemove", onMove);
+      window.removeEventListener("mouseup", onUp);
+    };
+  }, [marqueeState, mmToPx, setSelection]);
+
   return (
     <div className="canvas-stage-wrap">
       <div className="canvas-toolbar">
@@ -452,7 +613,8 @@ export function CanvasStage({ systemFonts }: CanvasStageProps) {
             <span className="visually-hidden">字号</span>
             <input
               type="number"
-              min={1}
+              min={0.1}
+              step={0.1}
               value={selectedTextStyle?.fontSize ?? 24}
               aria-label="字号"
               title="字号"
@@ -609,7 +771,13 @@ export function CanvasStage({ systemFonts }: CanvasStageProps) {
               ))}
             </div>
 
-            <div className="canvas-stage" style={stageStyle} onMouseDown={clearSelection}>
+            <div
+              ref={stageRef}
+              className="canvas-stage"
+              style={stageStyle}
+              onMouseDown={onStageMouseDown}
+              onContextMenu={onStageContextMenu}
+            >
               {elements.map((element) => {
                 const isSelected = selectedIds.includes(element.id);
                 const preview = resolveBindingValue(element.binding, previewRecord);
@@ -638,6 +806,7 @@ export function CanvasStage({ systemFonts }: CanvasStageProps) {
                       transform: `rotate(${element.rotation}deg)`,
                     }}
                     onMouseDown={(event) => startDrag(event, element)}
+                    onContextMenu={(event) => onElementContextMenu(event, element)}
                     onDoubleClick={(event) => startEditing(event, element)}
                   >
                     {isEditing ? (
@@ -762,6 +931,10 @@ export function CanvasStage({ systemFonts }: CanvasStageProps) {
                             symbology={element.barcode.symbology}
                             className="barcode-svg"
                             showText={false}
+                            mmToPx={mmToPx}
+                            moduleWidthMm={element.barcode.moduleWidth}
+                            quietZoneMm={element.barcode.quietZone}
+                            heightMm={Math.max(3, element.heightMm)}
                           />
                         </div>
                         {element.barcode.textPosition === "bottom" ? (
@@ -902,10 +1075,78 @@ export function CanvasStage({ systemFonts }: CanvasStageProps) {
                   }
                 />
               ))}
+
+              {marqueeState ? (
+                <div
+                  className="selection-marquee"
+                  style={{
+                    left: Math.min(marqueeState.startX, marqueeState.currentX),
+                    top: Math.min(marqueeState.startY, marqueeState.currentY),
+                    width: Math.abs(marqueeState.currentX - marqueeState.startX),
+                    height: Math.abs(marqueeState.currentY - marqueeState.startY),
+                  }}
+                />
+              ) : null}
             </div>
           </div>
         </div>
       </div>
+
+      {contextMenu ? (
+        <div
+          className="canvas-context-menu"
+          style={{ left: contextMenu.clientX, top: contextMenu.clientY }}
+          onMouseDown={(event) => event.stopPropagation()}
+        >
+          <button type="button" className="tool-ghost canvas-context-item" onClick={openSavePresetModal}>
+            添加到自定义图形...
+          </button>
+        </div>
+      ) : null}
+
+      {savePresetModalOpen ? (
+        <div className="modal-mask" onClick={() => setSavePresetModalOpen(false)}>
+          <section className="modal-card" onClick={(event) => event.stopPropagation()}>
+            <header className="modal-header">
+              <h3>保存为自定义图形</h3>
+              <button type="button" onClick={() => setSavePresetModalOpen(false)} aria-label="关闭弹窗">
+                ×
+              </button>
+            </header>
+            <div className="form-grid">
+              <label>
+                名称
+                <input
+                  value={customPresetName}
+                  onChange={(event) => setCustomPresetName(event.target.value)}
+                  placeholder="输入自定义图形名称"
+                />
+              </label>
+              <label>
+                分类
+                <select
+                  value={customPresetCategory}
+                  onChange={(event) => setCustomPresetCategory(event.target.value)}
+                >
+                  {customPresetCategories.map((category) => (
+                    <option key={category} value={category}>
+                      {category}
+                    </option>
+                  ))}
+                </select>
+              </label>
+            </div>
+            <div className="inline-actions">
+              <button type="button" className="tool-ghost" onClick={() => setSavePresetModalOpen(false)}>
+                取消
+              </button>
+              <button type="button" className="primary" onClick={confirmSavePreset}>
+                保存
+              </button>
+            </div>
+          </section>
+        </div>
+      ) : null}
     </div>
   );
 }
@@ -934,6 +1175,16 @@ function getAlignTransformOrigin(align: TextStyle["align"]): "left" | "center" |
     return "right";
   }
   return "left";
+}
+
+function toStagePoint(clientX: number, clientY: number, stage: HTMLDivElement) {
+  const rect = stage.getBoundingClientRect();
+  const width = Math.max(1, rect.width);
+  const height = Math.max(1, rect.height);
+  return {
+    x: clamp(clientX - rect.left, 0, width),
+    y: clamp(clientY - rect.top, 0, height),
+  };
 }
 
 function resizeRect(

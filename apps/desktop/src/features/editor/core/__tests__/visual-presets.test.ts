@@ -10,9 +10,19 @@ import {
 } from "../visual-presets";
 
 describe("visual preset catalog", () => {
-  it("contains rich built-in shape and icon presets", () => {
-    expect(SHAPE_PRESETS.length).toBeGreaterThanOrEqual(24);
-    expect(ICON_PRESETS.length).toBeGreaterThanOrEqual(30);
+  it("contains richer built-in shape and icon presets", () => {
+    expect(SHAPE_PRESETS.length).toBeGreaterThanOrEqual(32);
+    expect(ICON_PRESETS.length).toBeGreaterThanOrEqual(50);
+  });
+
+  it("uses Chinese category labels for shape and icon presets", () => {
+    const shapeCategories = new Set(SHAPE_PRESETS.map((preset) => preset.category));
+    const iconCategories = new Set(ICON_PRESETS.map((preset) => preset.category));
+
+    expect(shapeCategories.has("基础形状")).toBe(true);
+    expect(shapeCategories.has("箭头指引")).toBe(true);
+    expect(iconCategories.has("常用")).toBe(true);
+    expect(iconCategories.has("物流仓储")).toBe(true);
   });
 
   it("round-trips shape binding values", () => {
@@ -29,4 +39,3 @@ describe("visual preset catalog", () => {
     expect(readIconPresetIdFromBinding("icon:missing-id")).toBeNull();
   });
 });
-

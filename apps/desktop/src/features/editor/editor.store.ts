@@ -9,12 +9,14 @@ import {
   createShapeElement,
   createTextElement,
 } from "./core/model";
+import { buildIndustryTemplateElements } from "./core/industry-templates";
 import {
   getIconPreset,
   getShapePreset,
   toIconPresetBindingValue,
   toShapePresetBindingValue,
 } from "./core/visual-presets";
+import { readCustomPresets, type CustomPreset, writeCustomPresets } from "./core/custom-presets";
 import type {
   AlignMode,
   BarcodeConfig,
@@ -93,6 +95,7 @@ type AddIconElementInput = {
 type EditorState = {
   documents: EditorDocument[];
   activeDocumentId: string;
+  customPresets: CustomPreset[];
   createDocument: (input?: CreateDocumentInput) => string;
   closeDocument: (id: string) => void;
   setActiveDocument: (id: string) => void;
@@ -104,6 +107,9 @@ type EditorState = {
   addQrcodeElement: () => void;
   addShapeElement: (input?: AddShapeElementInput) => void;
   addIconElement: (input?: AddIconElementInput) => void;
+  applyIndustryTemplate: (templateId: string) => void;
+  saveSelectionAsCustomPreset: (input: { name: string; category: string }) => boolean;
+  applyCustomPreset: (id: string) => void;
   setLabelSize: (patch: Partial<LabelSize>) => void;
   setSelection: (ids: string[]) => void;
   toggleSelection: (id: string) => void;
@@ -261,6 +267,40 @@ function calcAdaptiveVisualElement(labelSize: LabelSize, ratio = 0.42, min = 10,
   return { xMm, yMm, widthMm, heightMm };
 }
 
+function buildCustomPresetId(): string {
+  return `custom-${Date.now()}-${Math.random().toString(16).slice(2, 8)}`;
+}
+
+function getElementsBounds(elements: EditorElement[]) {
+  const left = Math.min(...elements.map((item) => item.xMm));
+  const top = Math.min(...elements.map((item) => item.yMm));
+  const right = Math.max(...elements.map((item) => item.xMm + item.widthMm));
+  const bottom = Math.max(...elements.map((item) => item.yMm + item.heightMm));
+  return {
+    left,
+    top,
+    right,
+    bottom,
+    width: Math.max(0, right - left),
+    height: Math.max(0, bottom - top),
+  };
+}
+
+function normalizePresetElements(elements: EditorElement[]): EditorElement[] {
+  if (elements.length === 0) {
+    return [];
+  }
+  const bounds = getElementsBounds(elements);
+  return elements.map((element) => {
+    const cloned = cloneElement(element);
+    return {
+      ...cloned,
+      xMm: round1(cloned.xMm - bounds.left),
+      yMm: round1(cloned.yMm - bounds.top),
+    };
+  });
+}
+
 function createDocument(input?: CreateDocumentInput): EditorDocument {
   return {
     id: nextDocumentId(),
@@ -332,10 +372,12 @@ function createInitialDocument(): EditorDocument {
 }
 
 const initialDocument = createInitialDocument();
+const initialCustomPresets = readCustomPresets();
 
 export const useEditorStore = create<EditorState>((set) => ({
   documents: [initialDocument],
   activeDocumentId: initialDocument.id,
+  customPresets: initialCustomPresets,
 
   createDocument: (input) => {
     let newId = "";
@@ -577,6 +619,114 @@ export const useEditorStore = create<EditorState>((set) => ({
       ),
     })),
 
+  applyIndustryTemplate: (templateId) =>
+    set((state) => ({
+      documents: updateActiveDocument(
+        state,
+        (document) => {
+          const built = buildIndustryTemplateElements(templateId, document.labelSize, nextElementId);
+          if (built.length === 0) {
+            return document;
+          }
+          return {
+            ...document,
+            elements: [...document.elements, ...built],
+            selectedIds: built.map((item) => item.id),
+          };
+        },
+        true
+      ),
+    })),
+
+  saveSelectionAsCustomPreset: (input) => {
+    let saved = false;
+    set((state) => {
+      const active = selectActiveDocument(state);
+      if (!active || active.selectedIds.length === 0) {
+        return state;
+      }
+      const selectedIdSet = new Set(active.selectedIds);
+      const selectedElements = active.elements
+        .filter((element) => selectedIdSet.has(element.id))
+        .map((element) => cloneElement(element));
+      if (selectedElements.length === 0) {
+        return state;
+      }
+
+      const name = (input.name || "").trim() || `自定义图形-${state.customPresets.length + 1}`;
+      const category = (input.category || "").trim() || "未分类";
+      const now = Date.now();
+      const preset: CustomPreset = {
+        id: buildCustomPresetId(),
+        name,
+        category,
+        elements: normalizePresetElements(selectedElements),
+        elementCount: selectedElements.length,
+        createdAt: now,
+        updatedAt: now,
+      };
+      const nextCustomPresets = [preset, ...state.customPresets].slice(0, 200);
+      writeCustomPresets(nextCustomPresets);
+      saved = true;
+      return {
+        customPresets: nextCustomPresets,
+      };
+    });
+    return saved;
+  },
+
+  applyCustomPreset: (id) =>
+    set((state) => {
+      const preset = state.customPresets.find((item) => item.id === id);
+      if (!preset || preset.elements.length === 0) {
+        return state;
+      }
+
+      return {
+        documents: updateActiveDocument(
+          state,
+          (document) => {
+            const normalized = preset.elements.map((element) => cloneElement(element));
+            const bounds = getElementsBounds(normalized);
+            const anchorX = round1(
+              clamp(
+                (document.labelSize.widthMm - bounds.width) / 2,
+                0,
+                Math.max(0, document.labelSize.widthMm - bounds.width)
+              )
+            );
+            const anchorY = round1(
+              clamp(
+                (document.labelSize.heightMm - bounds.height) / 2,
+                0,
+                Math.max(0, document.labelSize.heightMm - bounds.height)
+              )
+            );
+            const inserted = normalized.map((element) => {
+              const nextX = round1(
+                clamp(anchorX + element.xMm, 0, Math.max(0, document.labelSize.widthMm - element.widthMm))
+              );
+              const nextY = round1(
+                clamp(anchorY + element.yMm, 0, Math.max(0, document.labelSize.heightMm - element.heightMm))
+              );
+              return {
+                ...cloneElement(element),
+                id: nextElementId(element.type),
+                xMm: nextX,
+                yMm: nextY,
+              };
+            });
+            return {
+              ...document,
+              elements: [...document.elements, ...inserted],
+              selectedIds: inserted.map((item) => item.id),
+            };
+          },
+          true
+        ),
+      };
+    }),
+
   setLabelSize: (patch) =>
     set((state) => ({
       documents: updateActiveDocument(
@@ -654,12 +804,20 @@ export const useEditorStore = create<EditorState>((set) => ({
             if (element.id !== id) {
               return element;
             }
+            const minWidthMm =
+              element.type === "barcode"
+                ? Math.max(8, round1(Math.max(0.1, element.barcode.moduleWidth) * 12))
+                : 1;
+            const minHeightMm =
+              element.type === "barcode"
+                ? 3
+                : 1;
             return {
               ...element,
               xMm: patch.xMm ?? element.xMm,
               yMm: patch.yMm ?? element.yMm,
-              widthMm: Math.max(1, patch.widthMm ?? element.widthMm),
-              heightMm: Math.max(1, patch.heightMm ?? element.heightMm),
+              widthMm: Math.max(minWidthMm, patch.widthMm ?? element.widthMm),
+              heightMm: Math.max(minHeightMm, patch.heightMm ?? element.heightMm),
               rotation: patch.rotation ?? element.rotation,
             };
           }),
@@ -692,30 +850,38 @@ export const useEditorStore = create<EditorState>((set) => ({
     })),
 
   updateSelectedTextStyle: (patch) =>
-    set((state) => ({
-      documents: updateActiveDocument(
-        state,
-        (document) => {
-          const selected = new Set(document.selectedIds);
-          return {
-            ...document,
-            elements: document.elements.map((element) => {
-              if (!selected.has(element.id)) {
-                return element;
-              }
-              return {
-                ...element,
-                textStyle: {
-                  ...element.textStyle,
-                  ...patch,
-                },
-              };
-            }),
-          };
-        },
-        true
-      ),
-    })),
+    set((state) => {
+      const normalizedPatch: Partial<TextStyle> = {
+        ...patch,
+      };
+      if (typeof normalizedPatch.fontSize === "number" && Number.isFinite(normalizedPatch.fontSize)) {
+        normalizedPatch.fontSize = round1(Math.max(0.1, normalizedPatch.fontSize));
+      }
+      return {
+        documents: updateActiveDocument(
+          state,
+          (document) => {
+            const selected = new Set(document.selectedIds);
+            return {
+              ...document,
+              elements: document.elements.map((element) => {
+                if (!selected.has(element.id)) {
+                  return element;
+                }
+                return {
+                  ...element,
+                  textStyle: {
+                    ...element.textStyle,
+                    ...normalizedPatch,
+                  },
+                };
+              }),
+            };
+          },
+          true
+        ),
+      };
+    }),
 
   updateSelectedBarcode: (patch) =>
     set((state) => ({
@@ -852,5 +1018,6 @@ export function resetEditorStoreForTests() {
   useEditorStore.setState({
     documents: [first],
     activeDocumentId: first.id,
+    customPresets: [],
   });
 }

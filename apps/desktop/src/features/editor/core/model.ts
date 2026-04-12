@@ -27,13 +27,13 @@ const DEFAULT_TEXT_STYLE: TextStyle = {
 };
 
 const DEFAULT_BARCODE_CONFIG: BarcodeConfig = {
-  symbology: "CODE128",
+  symbology: "CODE128A",
   moduleWidth: 0.33,
   textPosition: "bottom",
   textGap: 0.6,
   quietZone: 1,
   checksumEnabled: true,
-  minHeight: 8,
+  minHeight: 3,
   direction: "normal",
 };
 
@@ -96,6 +96,7 @@ export function createBarcodeElement(init: BarcodeElementInit): BarcodeElement {
       } satisfies ContentBinding),
     textStyle: {
       ...DEFAULT_TEXT_STYLE,
+      fontSize: 2,
       align: "center",
       ...init.textStyle,
     },

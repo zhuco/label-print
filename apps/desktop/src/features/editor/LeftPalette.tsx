@@ -1,20 +1,25 @@
 import { useMemo, useState, type ReactNode } from "react";
 
-import {
-  ICON_PRESETS,
-  PresetGlyph,
-  SHAPE_PRESETS,
-  type VisualPreset,
-  type VisualPresetKind,
-} from "./core/visual-presets";
+import { INDUSTRY_TEMPLATES, type IndustryTemplate } from "./core/industry-templates";
+import { ICON_PRESETS, PresetGlyph, SHAPE_PRESETS, type VisualPresetKind } from "./core/visual-presets";
 
 type LeftPaletteProps = {
   onAddText: () => void;
   onAddBarcode: () => void;
   onAddImage: () => void;
+  onRecognizeImage: () => void;
   onAddQrcode: () => void;
   onAddShape: (presetId: string) => void;
   onAddIcon: (presetId: string) => void;
+  onApplyIndustryTemplate: (templateId: string) => void;
+  onApplyCustomPreset: (presetId: string) => void;
+  customPresets: Array<{
+    id: string;
+    name: string;
+    category: string;
+    elementCount: number;
+    createdAt: number;
+  }>;
 };
 
 type ToolItem = {
@@ -24,94 +29,112 @@ type ToolItem = {
   icon: ReactNode;
 };
 
+type PickerKind = VisualPresetKind | "industry" | "custom";
+
+type PickerOption = {
+  id: string;
+  label: string;
+  category: string;
+  description?: string;
+  kind: PickerKind;
+  previewPresetId?: string;
+};
+
 export function LeftPalette({
   onAddText,
   onAddBarcode,
   onAddImage,
+  onRecognizeImage,
   onAddQrcode,
   onAddShape,
   onAddIcon,
+  onApplyIndustryTemplate,
+  onApplyCustomPreset,
+  customPresets,
 }: LeftPaletteProps) {
-  const [pickerKind, setPickerKind] = useState<VisualPresetKind | null>(null);
+  const [pickerKind, setPickerKind] = useState<PickerKind | null>(null);
   const [searchKeyword, setSearchKeyword] = useState("");
-  const [activeCategory, setActiveCategory] = useState("All");
+  const [activeCategory, setActiveCategory] = useState("全部");
 
-  const presetOptions = pickerKind === "shape" ? SHAPE_PRESETS : ICON_PRESETS;
-  const presetCategories = useMemo(() => {
-    const source = new Set(presetOptions.map((item) => item.category));
-    return ["All", ...source];
-  }, [presetOptions]);
-  const visiblePresets = useMemo(() => {
-    const keyword = searchKeyword.trim().toLocaleLowerCase("en-US");
-    return presetOptions.filter((item) => {
-      const matchCategory = activeCategory === "All" || item.category === activeCategory;
+  const pickerOptions = useMemo<PickerOption[]>(() => {
+    if (!pickerKind) {
+      return [];
+    }
+    if (pickerKind === "industry") {
+      return INDUSTRY_TEMPLATES.map((template) => toIndustryOption(template));
+    }
+    if (pickerKind === "custom") {
+      return customPresets.map((item) => ({
+        id: item.id,
+        label: item.name,
+        category: item.category,
+        kind: "custom",
+        description: `${item.elementCount} 个元素`,
+      }));
+    }
+    const visualOptions = pickerKind === "shape" ? SHAPE_PRESETS : ICON_PRESETS;
+    return visualOptions.map((item) => ({
+      id: item.id,
+      label: item.label,
+      category: item.category,
+      kind: pickerKind,
+      previewPresetId: item.id,
+    }));
+  }, [customPresets, pickerKind]);
+
+  const pickerCategories = useMemo(() => {
+    const source = new Set(pickerOptions.map((item) => item.category));
+    return ["全部", ...source];
+  }, [pickerOptions]);
+
+  const visibleOptions = useMemo(() => {
+    const keyword = searchKeyword.trim().toLocaleLowerCase("zh-CN");
+    return pickerOptions.filter((item) => {
+      const matchCategory = activeCategory === "全部" || item.category === activeCategory;
       if (!matchCategory) {
         return false;
       }
       if (!keyword) {
         return true;
       }
-      const haystack = `${item.label} ${item.id} ${item.category}`.toLocaleLowerCase("en-US");
+      const haystack = `${item.label} ${item.id} ${item.category} ${item.description ?? ""}`.toLocaleLowerCase("zh-CN");
       return haystack.includes(keyword);
     });
-  }, [activeCategory, presetOptions, searchKeyword]);
+  }, [activeCategory, pickerOptions, searchKeyword]);
 
-  const openPresetPicker = (kind: VisualPresetKind) => {
+  const openPresetPicker = (kind: PickerKind) => {
     setPickerKind(kind);
     setSearchKeyword("");
-    setActiveCategory("All");
+    setActiveCategory("全部");
   };
 
   const closePresetPicker = () => {
     setPickerKind(null);
   };
 
-  const choosePreset = (preset: VisualPreset) => {
-    if (pickerKind === "shape") {
-      onAddShape(preset.id);
-    } else if (pickerKind === "icon") {
-      onAddIcon(preset.id);
+  const choosePreset = (option: PickerOption) => {
+    if (option.kind === "shape") {
+      onAddShape(option.id);
+    } else if (option.kind === "icon") {
+      onAddIcon(option.id);
+    } else if (option.kind === "custom") {
+      onApplyCustomPreset(option.id);
+    } else if (option.kind === "industry") {
+      onApplyIndustryTemplate(option.id);
     }
     closePresetPicker();
   };
 
   const items: ToolItem[] = [
-    {
-      id: "text",
-      label: "文本",
-      onClick: onAddText,
-      icon: <IconText />,
-    },
-    {
-      id: "barcode",
-      label: "条码",
-      onClick: onAddBarcode,
-      icon: <IconBarcode />,
-    },
-    {
-      id: "image",
-      label: "图片",
-      onClick: onAddImage,
-      icon: <IconImage />,
-    },
-    {
-      id: "qrcode",
-      label: "二维码",
-      onClick: onAddQrcode,
-      icon: <IconQrcode />,
-    },
-    {
-      id: "shape",
-      label: "图形",
-      onClick: () => openPresetPicker("shape"),
-      icon: <IconShape />,
-    },
-    {
-      id: "icon",
-      label: "图标",
-      onClick: () => openPresetPicker("icon"),
-      icon: <IconStar />,
-    },
+    { id: "text", label: "文本", onClick: onAddText, icon: <IconText /> },
+    { id: "barcode", label: "条码", onClick: onAddBarcode, icon: <IconBarcode /> },
+    { id: "image", label: "图片", onClick: onAddImage, icon: <IconImage /> },
+    { id: "image-recognition", label: "图片识别", onClick: onRecognizeImage, icon: <IconScanImage /> },
+    { id: "qrcode", label: "二维码", onClick: onAddQrcode, icon: <IconQrcode /> },
+    { id: "shape", label: "图形", onClick: () => openPresetPicker("shape"), icon: <IconShape /> },
+    { id: "icon", label: "图标", onClick: () => openPresetPicker("icon"), icon: <IconStar /> },
+    { id: "custom-template", label: "自定义图形", onClick: () => openPresetPicker("custom"), icon: <IconCustomTemplate /> },
+    { id: "industry-template", label: "行业模板", onClick: () => openPresetPicker("industry"), icon: <IconTemplate /> },
   ];
 
   return (
@@ -135,7 +158,7 @@ export function LeftPalette({
         <div className="modal-mask preset-picker-mask" onClick={closePresetPicker}>
           <section className="modal-card preset-picker-modal" onClick={(event) => event.stopPropagation()}>
             <header className="modal-header">
-              <h3>{pickerKind === "shape" ? "选择图形" : "选择图标"}</h3>
+              <h3>{resolvePickerTitle(pickerKind)}</h3>
               <button type="button" onClick={closePresetPicker} aria-label="关闭选择弹窗">
                 ×
               </button>
@@ -147,13 +170,13 @@ export function LeftPalette({
                 <input
                   value={searchKeyword}
                   onChange={(event) => setSearchKeyword(event.target.value)}
-                  placeholder={pickerKind === "shape" ? "输入图形名称" : "输入图标名称"}
+                  placeholder={resolveSearchPlaceholder(pickerKind)}
                 />
               </label>
             </div>
 
             <div className="preset-picker-categories">
-              {presetCategories.map((category) => (
+              {pickerCategories.map((category) => (
                 <button
                   key={category}
                   type="button"
@@ -166,22 +189,37 @@ export function LeftPalette({
             </div>
 
             <div className="preset-picker-grid">
-              {visiblePresets.map((preset) => (
+              {visibleOptions.map((option) => (
                 <button
-                  key={preset.id}
+                  key={option.id}
                   type="button"
                   className="preset-card"
-                  onClick={() => choosePreset(preset)}
-                  data-testid={`preset-card-${preset.id}`}
+                  onClick={() => choosePreset(option)}
+                  data-testid={
+                    option.kind === "industry"
+                      ? `industry-template-${option.id}`
+                      : option.kind === "custom"
+                        ? `custom-template-${option.id}`
+                        : `preset-card-${option.id}`
+                  }
                 >
                   <span className="preset-card-preview" aria-hidden="true">
-                    <PresetGlyph kind={pickerKind} presetId={preset.id} className="preset-glyph" />
+                    {option.kind === "custom" ? (
+                      <span className="preset-custom-mark">自定义</span>
+                    ) : (
+                      <PresetGlyph
+                        kind={option.kind === "shape" ? "shape" : "icon"}
+                        presetId={option.previewPresetId ?? "rectangle"}
+                        className="preset-glyph"
+                      />
+                    )}
                   </span>
-                  <span className="preset-card-label">{preset.label}</span>
-                  <span className="preset-card-meta">{preset.category}</span>
+                  <span className="preset-card-label">{option.label}</span>
+                  <span className="preset-card-meta">{option.category}</span>
+                  {option.description ? <span className="preset-card-desc">{option.description}</span> : null}
                 </button>
               ))}
-              {visiblePresets.length === 0 ? <p className="muted">没有匹配的预设。</p> : null}
+              {visibleOptions.length === 0 ? <p className="muted">没有匹配的预设。</p> : null}
             </div>
           </section>
         </div>
@@ -229,6 +267,16 @@ function IconImage() {
   );
 }
 
+function IconScanImage() {
+  return (
+    <IconShell>
+      <rect x="4.5" y="5" width="15" height="14" rx="2.2" fill="none" stroke="currentColor" strokeWidth="1.8" />
+      <path d="M7.2 8.5h2.4M14.4 8.5h2.4M7.2 15.5h2.4M14.4 15.5h2.4" fill="none" stroke="currentColor" strokeWidth="1.6" strokeLinecap="round" />
+      <path d="M10 13l2-2 2 2" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round" />
+    </IconShell>
+  );
+}
+
 function IconQrcode() {
   return (
     <IconShell>
@@ -262,5 +310,62 @@ function IconStar() {
       />
     </IconShell>
   );
+}
+
+function IconTemplate() {
+  return (
+    <IconShell>
+      <rect x="4" y="4.5" width="16" height="15" rx="2" fill="none" stroke="currentColor" strokeWidth="1.8" />
+      <path d="M8 9h8M8 12h8M8 15h5" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" />
+      <path d="M15.8 6.8l1 2 2.2.3-1.6 1.5.4 2.2-2-1-2 1 .4-2.2-1.6-1.5 2.2-.3z" fill="none" stroke="currentColor" strokeWidth="1.5" />
+    </IconShell>
+  );
+}
+
+function IconCustomTemplate() {
+  return (
+    <IconShell>
+      <rect x="4" y="4.5" width="16" height="15" rx="2" fill="none" stroke="currentColor" strokeWidth="1.8" />
+      <path d="M8 9h8M8 12h8M8 15h3" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" />
+      <path d="M15 6.4l1.1 2.2 2.4.3-1.7 1.6.4 2.4-2.2-1.1-2.2 1.1.4-2.4-1.7-1.6 2.4-.3z" fill="none" stroke="currentColor" strokeWidth="1.4" />
+    </IconShell>
+  );
+}
+
+function resolvePickerTitle(kind: PickerKind): string {
+  if (kind === "shape") {
+    return "选择图形";
+  }
+  if (kind === "icon") {
+    return "选择图标";
+  }
+  if (kind === "custom") {
+    return "选择自定义图形";
+  }
+  return "选择行业模板";
+}
+
+function resolveSearchPlaceholder(kind: PickerKind): string {
+  if (kind === "shape") {
+    return "输入图形名称";
+  }
+  if (kind === "icon") {
+    return "输入图标名称";
+  }
+  if (kind === "custom") {
+    return "输入模板名称或分类";
+  }
+  return "输入行业模板名称";
+}
+
+function toIndustryOption(template: IndustryTemplate): PickerOption {
+  return {
+    id: template.id,
+    label: template.label,
+    category: template.category,
+    description: template.description,
+    kind: "industry",
+    previewPresetId: template.iconPresetId,
+  };
 }
 
