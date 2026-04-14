@@ -71,6 +71,29 @@ describe("Print submit modal", () => {
     );
   });
 
+  it("captures preview in export mode to avoid UI border artifacts", async () => {
+    const props = buildProps();
+    toPngMock.mockImplementation(async (node: HTMLElement, options: Record<string, unknown>) => {
+      expect(node.classList.contains("print-preview-capture-mode")).toBe(true);
+      expect(options).toMatchObject({
+        cacheBust: true,
+        backgroundColor: "#ffffff",
+        pixelRatio: 2,
+      });
+      return "data:image/png;base64,ZmFrZQ==";
+    });
+
+    const { container } = render(<PrintSubmitModal {...props} />);
+    fireEvent.click(screen.getByRole("button", { name: "打印" }));
+
+    await waitFor(() => {
+      expect(props.onConfirm).toHaveBeenCalledTimes(1);
+    });
+
+    const surface = container.querySelector<HTMLElement>(".print-preview-canvas-surface");
+    expect(surface?.classList.contains("print-preview-capture-mode")).toBe(false);
+  });
+
   it("supports keyboard shortcuts", async () => {
     const props = buildProps();
     render(<PrintSubmitModal {...props} />);

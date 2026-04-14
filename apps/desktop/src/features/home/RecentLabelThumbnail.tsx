@@ -5,6 +5,12 @@ import { QrcodePreview } from "../editor/QrcodePreview";
 import { resolveBindingValue } from "../editor/core/binding";
 import { buildTextDecoration } from "../editor/core/text-style";
 import type { TemplateSnapshot } from "../editor/core/template-snapshot";
+import {
+  normalizeVisualDashArray,
+  normalizeVisualStrokeWidth,
+  toAlphaColor,
+  toShapeBorderWidthPx,
+} from "../editor/core/visual-style";
 import { PresetGlyph, readIconPresetIdFromBinding, readShapePresetIdFromBinding } from "../editor/core/visual-presets";
 
 type RecentLabelThumbnailProps = {
@@ -98,6 +104,25 @@ export function RecentLabelThumbnail({ snapshot }: RecentLabelThumbnailProps) {
           }
 
           if (element.type === "shape") {
+            const strokeWidth = normalizeVisualStrokeWidth(element.textStyle.strokeWidth);
+            const strokeDashArray = normalizeVisualDashArray(element.textStyle.strokeDashArray);
+            const strokeColor = toAlphaColor(
+              element.textStyle.strokeColor || element.textStyle.color,
+              element.textStyle.strokeOpacity,
+              element.textStyle.color
+            );
+            const fillColor = toAlphaColor(
+              element.textStyle.fillColor || element.textStyle.color,
+              element.textStyle.fillOpacity,
+              element.textStyle.color
+            );
+            const shapeStyle = {
+              ...style,
+              borderColor: strokeColor,
+              borderWidth: `${toShapeBorderWidthPx(strokeWidth)}px`,
+              borderStyle: strokeDashArray.length > 0 ? "dashed" : "solid",
+              backgroundColor: fillColor,
+            };
             const presetId =
               element.binding.mode === "fixed" ? readShapePresetIdFromBinding(element.binding.fixedValue) : null;
             if (presetId) {
@@ -106,12 +131,26 @@ export function RecentLabelThumbnail({ snapshot }: RecentLabelThumbnailProps) {
                   key={element.id}
                   className="home-thumb-element home-thumb-shape home-thumb-shape-preset"
                   style={{
-                    ...style,
-                    borderColor: element.textStyle.color,
-                    color: element.textStyle.color,
+                    ...shapeStyle,
+                    color: strokeColor,
                   }}
                 >
-                  <PresetGlyph kind="shape" presetId={presetId} className="home-thumb-preset-svg" />
+                  <PresetGlyph
+                    kind="shape"
+                    presetId={presetId}
+                    className="home-thumb-preset-svg"
+                    strokeColor={strokeColor}
+                    fillColor={element.textStyle.fillColor}
+                    strokeWidth={strokeWidth}
+                    strokeOpacity={element.textStyle.strokeOpacity}
+                    fillOpacity={element.textStyle.fillOpacity}
+                    strokeLineCap={element.textStyle.strokeLineCap}
+                    strokeLineJoin={element.textStyle.strokeLineJoin}
+                    strokeDashArray={strokeDashArray}
+                    strokeDashOffset={element.textStyle.strokeDashOffset}
+                    strokeMiterLimit={element.textStyle.strokeMiterLimit}
+                    fillRule={element.textStyle.fillRule}
+                  />
                 </div>
               );
             }
@@ -126,10 +165,7 @@ export function RecentLabelThumbnail({ snapshot }: RecentLabelThumbnailProps) {
               <div
                 key={element.id}
                 className="home-thumb-element home-thumb-shape"
-                style={{
-                  ...style,
-                  borderColor: element.textStyle.color,
-                }}
+                style={shapeStyle}
               >
                 <span>{value || "形状"}</span>
               </div>
@@ -145,10 +181,25 @@ export function RecentLabelThumbnail({ snapshot }: RecentLabelThumbnailProps) {
                 className="home-thumb-element home-thumb-icon home-thumb-icon-preset"
                 style={{
                   ...style,
-                  color: element.textStyle.color,
+                  color: element.textStyle.strokeColor || element.textStyle.color,
                 }}
               >
-                <PresetGlyph kind="icon" presetId={iconPresetId} className="home-thumb-preset-svg" />
+                <PresetGlyph
+                  kind="icon"
+                  presetId={iconPresetId}
+                  className="home-thumb-preset-svg"
+                  strokeColor={element.textStyle.strokeColor || element.textStyle.color}
+                  fillColor={element.textStyle.fillColor}
+                  strokeWidth={element.textStyle.strokeWidth}
+                  strokeOpacity={element.textStyle.strokeOpacity}
+                  fillOpacity={element.textStyle.fillOpacity}
+                  strokeLineCap={element.textStyle.strokeLineCap}
+                  strokeLineJoin={element.textStyle.strokeLineJoin}
+                  strokeDashArray={element.textStyle.strokeDashArray}
+                  strokeDashOffset={element.textStyle.strokeDashOffset}
+                  strokeMiterLimit={element.textStyle.strokeMiterLimit}
+                  fillRule={element.textStyle.fillRule}
+                />
               </div>
             );
           }
@@ -164,7 +215,7 @@ export function RecentLabelThumbnail({ snapshot }: RecentLabelThumbnailProps) {
             <div key={element.id} className="home-thumb-element home-thumb-icon" style={style}>
               <span
                 style={{
-                  color: element.textStyle.color,
+                  color: element.textStyle.strokeColor || element.textStyle.color,
                   fontFamily: element.textStyle.fontFamily,
                   fontWeight: element.textStyle.fontWeight,
                 }}

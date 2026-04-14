@@ -7,6 +7,7 @@ import { resolveBindingValue } from "./core/binding";
 import { buildBarcodeTextStyle } from "./core/barcode-text-style";
 import { buildTextDecoration, computeSingleLineScaleX } from "./core/text-style";
 import type { EditorElement, LabelSize, TextStyle } from "./core/types";
+import { normalizeVisualDashArray, normalizeVisualStrokeWidth, toAlphaColor, toShapeBorderWidthPx } from "./core/visual-style";
 import { PresetGlyph, readIconPresetIdFromBinding, readShapePresetIdFromBinding } from "./core/visual-presets";
 
 export type DirectPrintSubmitInput = {
@@ -69,11 +70,18 @@ export function PrintSubmitModal({
       throw new Error("预览区域不存在。");
     }
 
-    const dataUrl = await toPng(target, {
-      cacheBust: true,
-      backgroundColor: "#ffffff",
-      pixelRatio: 2,
-    });
+    const captureClassName = "print-preview-capture-mode";
+    target.classList.add(captureClassName);
+    let dataUrl = "";
+    try {
+      dataUrl = await toPng(target, {
+        cacheBust: true,
+        backgroundColor: "#ffffff",
+        pixelRatio: 2,
+      });
+    } finally {
+      target.classList.remove(captureClassName);
+    }
     const marker = "base64,";
     const markerIndex = dataUrl.indexOf(marker);
     if (markerIndex < 0) {
@@ -407,6 +415,26 @@ export function PrintSubmitModal({
                     }
 
                     if (element.type === "shape") {
+                      const strokeWidth = normalizeVisualStrokeWidth(element.textStyle.strokeWidth);
+                      const strokeDashArray = normalizeVisualDashArray(element.textStyle.strokeDashArray);
+                      const strokeColor = toAlphaColor(
+                        element.textStyle.strokeColor || element.textStyle.color,
+                        element.textStyle.strokeOpacity,
+                        element.textStyle.color
+                      );
+                      const fillColor = toAlphaColor(
+                        element.textStyle.fillColor || element.textStyle.color,
+                        element.textStyle.fillOpacity,
+                        element.textStyle.color
+                      );
+                      const shapeStyle = {
+                        ...elementStyle,
+                        color: strokeColor,
+                        borderColor: strokeColor,
+                        borderWidth: `${toShapeBorderWidthPx(strokeWidth)}px`,
+                        borderStyle: strokeDashArray.length > 0 ? "dashed" : "solid",
+                        backgroundColor: fillColor,
+                      };
                       const shapePresetId =
                         element.binding.mode === "fixed" ? readShapePresetIdFromBinding(element.binding.fixedValue) : null;
 
@@ -415,9 +443,24 @@ export function PrintSubmitModal({
                           <div
                             key={element.id}
                             className="print-preview-element print-preview-shape print-preview-preset"
-                            style={{ ...elementStyle, color: element.textStyle.color, borderColor: element.textStyle.color }}
+                            style={shapeStyle}
                           >
-                            <PresetGlyph kind="shape" presetId={shapePresetId} className="print-preview-preset-svg" />
+                            <PresetGlyph
+                              kind="shape"
+                              presetId={shapePresetId}
+                              className="print-preview-preset-svg"
+                              strokeColor={strokeColor}
+                              fillColor={element.textStyle.fillColor}
+                              strokeWidth={strokeWidth}
+                              strokeOpacity={element.textStyle.strokeOpacity}
+                              fillOpacity={element.textStyle.fillOpacity}
+                              strokeLineCap={element.textStyle.strokeLineCap}
+                              strokeLineJoin={element.textStyle.strokeLineJoin}
+                              strokeDashArray={strokeDashArray}
+                              strokeDashOffset={element.textStyle.strokeDashOffset}
+                              strokeMiterLimit={element.textStyle.strokeMiterLimit}
+                              fillRule={element.textStyle.fillRule}
+                            />
                           </div>
                         );
                       }
@@ -434,7 +477,7 @@ export function PrintSubmitModal({
                         <div
                           key={element.id}
                           className="print-preview-element print-preview-shape"
-                          style={{ ...elementStyle, borderColor: element.textStyle.color }}
+                          style={shapeStyle}
                         >
                           <span>{previewValue || "Shape"}</span>
                         </div>
@@ -449,9 +492,24 @@ export function PrintSubmitModal({
                         <div
                           key={element.id}
                           className="print-preview-element print-preview-icon print-preview-preset"
-                          style={{ ...elementStyle, color: element.textStyle.color }}
+                          style={{ ...elementStyle, color: element.textStyle.strokeColor || element.textStyle.color }}
                         >
-                          <PresetGlyph kind="icon" presetId={iconPresetId} className="print-preview-preset-svg" />
+                          <PresetGlyph
+                            kind="icon"
+                            presetId={iconPresetId}
+                            className="print-preview-preset-svg"
+                            strokeColor={element.textStyle.strokeColor || element.textStyle.color}
+                            fillColor={element.textStyle.fillColor}
+                            strokeWidth={element.textStyle.strokeWidth}
+                            strokeOpacity={element.textStyle.strokeOpacity}
+                            fillOpacity={element.textStyle.fillOpacity}
+                            strokeLineCap={element.textStyle.strokeLineCap}
+                            strokeLineJoin={element.textStyle.strokeLineJoin}
+                            strokeDashArray={element.textStyle.strokeDashArray}
+                            strokeDashOffset={element.textStyle.strokeDashOffset}
+                            strokeMiterLimit={element.textStyle.strokeMiterLimit}
+                            fillRule={element.textStyle.fillRule}
+                          />
                         </div>
                       );
                     }
@@ -468,7 +526,11 @@ export function PrintSubmitModal({
                       <div key={element.id} className="print-preview-element print-preview-icon" style={elementStyle}>
                         <span
                           style={{
-                            color: element.textStyle.color,
+                            color: toAlphaColor(
+                              element.textStyle.strokeColor || element.textStyle.color,
+                              element.textStyle.strokeOpacity,
+                              element.textStyle.color
+                            ),
                             fontFamily: element.textStyle.fontFamily,
                             fontWeight: element.textStyle.fontWeight,
                           }}

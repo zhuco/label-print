@@ -52,11 +52,11 @@ export function HomePage({
         setContextMenu(null);
       }
     };
-    window.addEventListener("mousedown", closeMenu);
+    window.addEventListener("click", closeMenu);
     window.addEventListener("contextmenu", closeMenu);
     window.addEventListener("keydown", onEscape);
     return () => {
-      window.removeEventListener("mousedown", closeMenu);
+      window.removeEventListener("click", closeMenu);
       window.removeEventListener("contextmenu", closeMenu);
       window.removeEventListener("keydown", onEscape);
     };

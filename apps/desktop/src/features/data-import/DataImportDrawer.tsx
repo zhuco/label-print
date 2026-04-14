@@ -1,5 +1,6 @@
 import { useMemo, useState } from "react";
-import { buildPreview, parseCsv } from "@label/data-import";
+import { parseCsv } from "@label/data-import/csv";
+import { buildPreview } from "@label/data-import/preview";
 
 import { FieldMappingTable } from "./FieldMappingTable";
 import { useDataImportStore } from "./data-import.store";

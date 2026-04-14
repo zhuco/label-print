@@ -44,11 +44,13 @@ describe("element model defaults", () => {
     const element = createShapeElement({ id: "shape-1" });
     expect(element.type).toBe("shape");
     expect(element.binding.fixedValue).toBe("矩形");
+    expect(element.textStyle.strokeWidth).toBe(1.8);
   });
 
   it("icon element should default to @", () => {
     const element = createIconElement({ id: "icon-1" });
     expect(element.type).toBe("icon");
     expect(element.binding.fixedValue).toBe("@");
+    expect(element.textStyle.strokeWidth).toBe(1.8);
   });
 });

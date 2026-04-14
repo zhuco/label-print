@@ -1,4 +1,10 @@
 import { createDefaultBinding } from "./binding";
+import {
+  DEFAULT_VISUAL_FILL_RULE,
+  DEFAULT_VISUAL_MITER_LIMIT,
+  DEFAULT_VISUAL_OPACITY,
+  DEFAULT_VISUAL_STROKE_WIDTH,
+} from "./visual-style";
 import type {
   BarcodeConfig,
   BarcodeElement,
@@ -21,6 +27,17 @@ const DEFAULT_TEXT_STYLE: TextStyle = {
   strikeThrough: false,
   align: "left",
   color: "#101828",
+  strokeWidth: DEFAULT_VISUAL_STROKE_WIDTH,
+  strokeColor: "#101828",
+  fillColor: "#101828",
+  strokeOpacity: DEFAULT_VISUAL_OPACITY,
+  fillOpacity: 0,
+  strokeLineCap: "round",
+  strokeLineJoin: "round",
+  strokeDashArray: [],
+  strokeDashOffset: 0,
+  strokeMiterLimit: DEFAULT_VISUAL_MITER_LIMIT,
+  fillRule: DEFAULT_VISUAL_FILL_RULE,
   letterSpacing: 0,
   lineHeight: 1.2,
   wrapMode: "auto",
@@ -172,6 +189,9 @@ export function createShapeElement(init: BaseInit): ShapeElement {
       ...DEFAULT_TEXT_STYLE,
       align: "center",
       color: "#2a6fa8",
+      strokeColor: "#2a6fa8",
+      fillColor: "#2a6fa8",
+      fillOpacity: 0.12,
       ...init.textStyle,
     },
   });
@@ -197,6 +217,9 @@ export function createIconElement(init: BaseInit): IconElement {
       ...DEFAULT_TEXT_STYLE,
       align: "center",
       fontWeight: 700,
+      strokeColor: "#101828",
+      fillColor: "#101828",
+      fillOpacity: 1,
       ...init.textStyle,
     },
   });

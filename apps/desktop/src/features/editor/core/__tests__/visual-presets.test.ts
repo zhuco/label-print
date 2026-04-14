@@ -3,6 +3,7 @@ import { describe, expect, it } from "vitest";
 import {
   ICON_PRESETS,
   SHAPE_PRESETS,
+  getVisualPresetAspectRatio,
   readIconPresetIdFromBinding,
   readShapePresetIdFromBinding,
   toIconPresetBindingValue,
@@ -37,5 +38,17 @@ describe("visual preset catalog", () => {
     expect(readIconPresetIdFromBinding(bindingValue)).toBe("printer");
     expect(readIconPresetIdFromBinding("printer")).toBe("printer");
     expect(readIconPresetIdFromBinding("icon:missing-id")).toBeNull();
+  });
+
+  it("computes visual preset aspect ratio from real ink bounds", () => {
+    const shapeRatio = getVisualPresetAspectRatio("shape", "rectangle");
+    const iconRatio = getVisualPresetAspectRatio("icon", "mail");
+
+    expect(shapeRatio).toBeTruthy();
+    expect(iconRatio).toBeTruthy();
+    expect(shapeRatio).toBeGreaterThan(1.2);
+    expect(shapeRatio).toBeLessThan(1.5);
+    expect(iconRatio).toBeGreaterThan(1.2);
+    expect(iconRatio).toBeLessThan(1.5);
   });
 });

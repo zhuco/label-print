@@ -2382,7 +2382,7 @@ dependencies = [
 
 [[package]]
 name = "label-core"
-version = "0.1.2"
+version = "0.1.3"
 dependencies = [
  "maplit",
  "serde",
@@ -2392,7 +2392,7 @@ dependencies = [
 
 [[package]]
 name = "label-desktop"
-version = "0.1.2"
+version = "0.1.3"
 dependencies = [
  "bardecoder",
  "base64 0.22.1",

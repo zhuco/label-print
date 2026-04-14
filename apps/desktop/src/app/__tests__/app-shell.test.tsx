@@ -559,6 +559,50 @@ describe("App shell", () => {
     expect(closeMock).toHaveBeenCalledTimes(1);
   });
 
+  it("blocks save when picked file name already exists in recent history", async () => {
+    localStorage.setItem(
+      "label-print.recent-opened",
+      JSON.stringify([
+        {
+          id: "recent-dup-name",
+          fileName: "重复标签.lpt",
+          filePath: "D:/labels/重复标签.lpt",
+          saved: true,
+          openedAt: Date.UTC(2026, 3, 10, 8, 0, 0),
+          snapshot: {
+            title: "重复标签",
+            labelSize: { widthMm: 40, heightMm: 30 },
+            elements: [],
+            calibration: { offsetX: 0, offsetY: 0, scale: 1 },
+            printerId: "Zebra-01",
+            copies: 1,
+          },
+        },
+      ])
+    );
+
+    const writeMock = vi.fn().mockResolvedValue(undefined);
+    const closeMock = vi.fn().mockResolvedValue(undefined);
+    const createWritableMock = vi.fn().mockResolvedValue({
+      write: writeMock,
+      close: closeMock,
+    });
+    showSaveFilePickerMock.mockResolvedValue({
+      name: "重复标签.lpt",
+      createWritable: createWritableMock,
+    });
+
+    const { container } = render(<App />);
+    enterEditorMode(container);
+    fireEvent.click(screen.getByTestId("cmd-save"));
+
+    await waitFor(() => expect(showSaveFilePickerMock).toHaveBeenCalledTimes(1));
+    expect(createWritableMock).toHaveBeenCalledTimes(0);
+    expect(writeMock).toHaveBeenCalledTimes(0);
+    expect(closeMock).toHaveBeenCalledTimes(0);
+    expect(container.querySelector(".command-status")?.textContent).toContain("已存在于历史记录");
+  });
+
   it("saves launch-opened template back to original path without save dialog", async () => {
     const startupSnapshot = {
       title: "开机模板",
@@ -1046,6 +1090,7 @@ describe("App shell", () => {
 
     const deleteButton = container.querySelector<HTMLButtonElement>(".home-recent-context-delete");
     expect(deleteButton).not.toBeNull();
+    fireEvent.mouseDown(deleteButton!);
     fireEvent.click(deleteButton!);
 
     await waitFor(() => {

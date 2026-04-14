@@ -1,4 +1,15 @@
 import type { CSSProperties } from "react";
+import {
+  formatVisualDashArray,
+  normalizeVisualDashArray,
+  normalizeVisualDashOffset,
+  normalizeVisualFillRule,
+  normalizeVisualLineCap,
+  normalizeVisualLineJoin,
+  normalizeVisualMiterLimit,
+  normalizeVisualOpacity,
+  normalizeVisualStrokeWidth,
+} from "./visual-style";
 
 export type VisualPresetKind = "shape" | "icon";
 
@@ -7,6 +18,13 @@ export type VisualPreset = {
   label: string;
   category: string;
   markup: string;
+};
+
+type PresetInkBox = {
+  x: number;
+  y: number;
+  width: number;
+  height: number;
 };
 
 const SHAPE_PREFIX = "shape:";
@@ -747,6 +765,7 @@ export const ICON_PRESETS: VisualPreset[] = [
 
 const shapePresetMap = new Map(SHAPE_PRESETS.map((preset) => [preset.id, preset]));
 const iconPresetMap = new Map(ICON_PRESETS.map((preset) => [preset.id, preset]));
+const presetInkBoxCache = new Map<string, PresetInkBox>();
 
 export const DEFAULT_SHAPE_PRESET_ID = SHAPE_PRESETS[0].id;
 export const DEFAULT_ICON_PRESET_ID = ICON_PRESETS[0].id;
@@ -785,24 +804,268 @@ export function readIconPresetIdFromBinding(value: string | null | undefined): s
   return iconPresetMap.has(preferred) ? preferred : null;
 }
 
-type PresetGlyphProps = {
-  kind: VisualPresetKind;
-  presetId: string;
-  className?: string;
-  color?: string;
-  title?: string;
-};
+function parsePoints(points: string): Array<{ x: number; y: number }> {
+  return points
+    .trim()
+    .split(/[\s,]+/)
+    .map((item) => Number(item))
+    .reduce<Array<{ x: number; y: number }>>((acc, value, index, source) => {
+      if (index % 2 === 0 && Number.isFinite(value) && Number.isFinite(source[index + 1])) {
+        acc.push({ x: value, y: source[index + 1] });
+      }
+      return acc;
+    }, []);
+}
 
-export function PresetGlyph({ kind, presetId, className, color, title }: PresetGlyphProps) {
+function unionBox(
+  current: PresetInkBox | null,
+  next: PresetInkBox | null
+): PresetInkBox | null {
+  if (!next) {
+    return current;
+  }
+  if (!current) {
+    return next;
+  }
+  const x1 = Math.min(current.x, next.x);
+  const y1 = Math.min(current.y, next.y);
+  const x2 = Math.max(current.x + current.width, next.x + next.width);
+  const y2 = Math.max(current.y + current.height, next.y + next.height);
+  return {
+    x: x1,
+    y: y1,
+    width: x2 - x1,
+    height: y2 - y1,
+  };
+}
+
+function parseInkBoxFromPrimitiveMarkup(markup: string): PresetInkBox | null {
+  const wrapper = `<svg xmlns="http://www.w3.org/2000/svg">${markup}</svg>`;
+  const parser = new DOMParser();
+  const documentNode = parser.parseFromString(wrapper, "image/svg+xml");
+  const elements = documentNode.documentElement.querySelectorAll("*");
+  let box: PresetInkBox | null = null;
+
+  elements.forEach((element) => {
+    const tag = element.tagName.toLowerCase();
+    const attr = (name: string): number | null => {
+      const value = element.getAttribute(name);
+      if (!value) {
+        return null;
+      }
+      const parsed = Number(value);
+      return Number.isFinite(parsed) ? parsed : null;
+    };
+
+    let candidate: PresetInkBox | null = null;
+    if (tag === "rect") {
+      const x = attr("x") ?? 0;
+      const y = attr("y") ?? 0;
+      const width = attr("width");
+      const height = attr("height");
+      if (width && height) {
+        candidate = { x, y, width, height };
+      }
+    } else if (tag === "circle") {
+      const cx = attr("cx");
+      const cy = attr("cy");
+      const r = attr("r");
+      if (cx !== null && cy !== null && r !== null && r > 0) {
+        candidate = { x: cx - r, y: cy - r, width: r * 2, height: r * 2 };
+      }
+    } else if (tag === "ellipse") {
+      const cx = attr("cx");
+      const cy = attr("cy");
+      const rx = attr("rx");
+      const ry = attr("ry");
+      if (cx !== null && cy !== null && rx !== null && ry !== null && rx > 0 && ry > 0) {
+        candidate = { x: cx - rx, y: cy - ry, width: rx * 2, height: ry * 2 };
+      }
+    } else if (tag === "line") {
+      const x1 = attr("x1");
+      const y1 = attr("y1");
+      const x2 = attr("x2");
+      const y2 = attr("y2");
+      if (x1 !== null && y1 !== null && x2 !== null && y2 !== null) {
+        candidate = {
+          x: Math.min(x1, x2),
+          y: Math.min(y1, y2),
+          width: Math.abs(x2 - x1),
+          height: Math.abs(y2 - y1),
+        };
+      }
+    } else if (tag === "polyline" || tag === "polygon") {
+      const points = parsePoints(element.getAttribute("points") ?? "");
+      if (points.length > 0) {
+        const xs = points.map((item) => item.x);
+        const ys = points.map((item) => item.y);
+        const minX = Math.min(...xs);
+        const maxX = Math.max(...xs);
+        const minY = Math.min(...ys);
+        const maxY = Math.max(...ys);
+        candidate = {
+          x: minX,
+          y: minY,
+          width: maxX - minX,
+          height: maxY - minY,
+        };
+      }
+    }
+
+    box = unionBox(box, candidate);
+  });
+
+  return box;
+}
+
+function measureInkBoxFromDom(markup: string): PresetInkBox | null {
+  if (typeof document === "undefined" || !document.body) {
+    return null;
+  }
+  const svgNs = "http://www.w3.org/2000/svg";
+  const svg = document.createElementNS(svgNs, "svg");
+  const group = document.createElementNS(svgNs, "g");
+  svg.setAttribute("viewBox", "0 0 24 24");
+  svg.setAttribute("width", "24");
+  svg.setAttribute("height", "24");
+  svg.style.position = "absolute";
+  svg.style.left = "-9999px";
+  svg.style.top = "-9999px";
+  svg.style.visibility = "hidden";
+  group.innerHTML = markup;
+  svg.appendChild(group);
+  document.body.appendChild(svg);
+
+  try {
+    if (typeof (group as unknown as { getBBox?: () => DOMRect }).getBBox !== "function") {
+      return null;
+    }
+    const box = (group as unknown as { getBBox: () => DOMRect }).getBBox();
+    if (!Number.isFinite(box.width) || !Number.isFinite(box.height) || box.width <= 0 || box.height <= 0) {
+      return null;
+    }
+    return {
+      x: box.x,
+      y: box.y,
+      width: box.width,
+      height: box.height,
+    };
+  } catch {
+    return null;
+  } finally {
+    svg.remove();
+  }
+}
+
+export function getVisualPresetInkBox(kind: VisualPresetKind, presetId: string): PresetInkBox | null {
+  const cacheKey = `${kind}:${presetId}`;
+  const cached = presetInkBoxCache.get(cacheKey);
+  if (cached) {
+    return cached;
+  }
   const preset = kind === "shape" ? getShapePreset(presetId) : getIconPreset(presetId);
   if (!preset) {
     return null;
   }
 
-  const style: CSSProperties | undefined = color ? { color } : undefined;
+  const measured = measureInkBoxFromDom(preset.markup) ?? parseInkBoxFromPrimitiveMarkup(preset.markup);
+  const fallback: PresetInkBox = { x: 0, y: 0, width: 24, height: 24 };
+  const normalized = measured && measured.width > 0 && measured.height > 0 ? measured : fallback;
+  presetInkBoxCache.set(cacheKey, normalized);
+  return normalized;
+}
+
+export function getVisualPresetAspectRatio(kind: VisualPresetKind, presetId: string): number | null {
+  const box = getVisualPresetInkBox(kind, presetId);
+  if (!box || box.width <= 0 || box.height <= 0) {
+    return null;
+  }
+  return box.width / box.height;
+}
+
+type PresetGlyphProps = {
+  kind: VisualPresetKind;
+  presetId: string;
+  className?: string;
+  color?: string;
+  strokeColor?: string;
+  fillColor?: string;
+  strokeWidth?: number;
+  strokeOpacity?: number;
+  fillOpacity?: number;
+  strokeLineCap?: "butt" | "round" | "square";
+  strokeLineJoin?: "miter" | "round" | "bevel";
+  strokeDashArray?: number[] | string;
+  strokeDashOffset?: number;
+  strokeMiterLimit?: number;
+  fillRule?: "nonzero" | "evenodd";
+  title?: string;
+};
+
+type PresetGlyphCssVars = CSSProperties & {
+  "--preset-stroke-width"?: string;
+  "--preset-stroke-color"?: string;
+  "--preset-fill-color"?: string;
+  "--preset-stroke-opacity"?: string;
+  "--preset-fill-opacity"?: string;
+  "--preset-stroke-linecap"?: "butt" | "round" | "square";
+  "--preset-stroke-linejoin"?: "miter" | "round" | "bevel";
+  "--preset-stroke-dasharray"?: string;
+  "--preset-stroke-dashoffset"?: string;
+  "--preset-stroke-miterlimit"?: string;
+  "--preset-fill-rule"?: "nonzero" | "evenodd";
+};
+
+export function PresetGlyph({
+  kind,
+  presetId,
+  className,
+  color,
+  strokeColor,
+  fillColor,
+  strokeWidth,
+  strokeOpacity,
+  fillOpacity,
+  strokeLineCap,
+  strokeLineJoin,
+  strokeDashArray,
+  strokeDashOffset,
+  strokeMiterLimit,
+  fillRule,
+  title,
+}: PresetGlyphProps) {
+  const preset = kind === "shape" ? getShapePreset(presetId) : getIconPreset(presetId);
+  if (!preset) {
+    return null;
+  }
+
+  const normalizedStrokeColor = (strokeColor || color || "").trim();
+  const normalizedFillColor = (fillColor || normalizedStrokeColor).trim();
+  const normalizedDashArray = normalizeVisualDashArray(strokeDashArray);
+  const style: PresetGlyphCssVars = {
+    "--preset-stroke-width": `${normalizeVisualStrokeWidth(strokeWidth)}`,
+    "--preset-stroke-opacity": `${normalizeVisualOpacity(strokeOpacity)}`,
+    "--preset-fill-opacity": `${normalizeVisualOpacity(fillOpacity)}`,
+    "--preset-stroke-linecap": normalizeVisualLineCap(strokeLineCap),
+    "--preset-stroke-linejoin": normalizeVisualLineJoin(strokeLineJoin),
+    "--preset-stroke-dasharray": normalizedDashArray.length > 0 ? formatVisualDashArray(normalizedDashArray) : "none",
+    "--preset-stroke-dashoffset": `${normalizeVisualDashOffset(strokeDashOffset)}`,
+    "--preset-stroke-miterlimit": `${normalizeVisualMiterLimit(strokeMiterLimit)}`,
+    "--preset-fill-rule": normalizeVisualFillRule(fillRule),
+  };
+  if (normalizedStrokeColor) {
+    style["--preset-stroke-color"] = normalizedStrokeColor;
+  }
+  if (normalizedFillColor) {
+    style["--preset-fill-color"] = normalizedFillColor;
+  }
+  if (color && !strokeColor && !fillColor) {
+    style.color = color;
+  }
   return (
     <svg
       viewBox="0 0 24 24"
+      preserveAspectRatio="none"
       className={className}
       style={style}
       role={title ? "img" : "presentation"}

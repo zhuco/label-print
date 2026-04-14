@@ -21,6 +21,7 @@ import { buildSnapTargets, selectElementsByRect, snapElementPosition, type SnapT
 import { buildRulerTicks, isMajorRulerTick, shouldShowRulerLabel } from "./core/ruler";
 import { buildTextDecoration, computeSingleLineScaleX } from "./core/text-style";
 import type { EditorElement, TextStyle } from "./core/types";
+import { normalizeVisualDashArray, normalizeVisualStrokeWidth, toAlphaColor, toShapeBorderWidthPx } from "./core/visual-style";
 import { TextStyleIcon } from "./TextStyleIcon";
 import { PresetGlyph, readIconPresetIdFromBinding, readShapePresetIdFromBinding } from "./core/visual-presets";
 import { selectActiveDocument, useEditorStore } from "./editor.store";
@@ -348,15 +349,14 @@ export function CanvasStage({ systemFonts }: CanvasStageProps) {
       const deltaX = snapped.xMm - primaryBase.xMm;
       const deltaY = snapped.yMm - primaryBase.yMm;
       const dragIdSet = new Set(dragState.dragIds);
-      const currentLabel = labelSizeRef.current;
 
       const nextElements = elementsRef.current.map((element) => {
         if (!dragIdSet.has(element.id)) {
           return element;
         }
         const basePosition = dragState.basePositionMap[element.id];
-        const xMm = clamp(basePosition.xMm + deltaX, 0, currentLabel.widthMm - element.widthMm);
-        const yMm = clamp(basePosition.yMm + deltaY, 0, currentLabel.heightMm - element.heightMm);
+        const xMm = round1(basePosition.xMm + deltaX);
+        const yMm = round1(basePosition.yMm + deltaY);
         return { ...element, xMm, yMm };
       });
 
@@ -384,7 +384,7 @@ export function CanvasStage({ systemFonts }: CanvasStageProps) {
     const onMove = (event: MouseEvent) => {
       const dxMm = (event.clientX - resizeState.startClientX) / mmToPx;
       const dyMm = (event.clientY - resizeState.startClientY) / mmToPx;
-      const nextRect = resizeRect(resizeState.baseRect, resizeState.handle, dxMm, dyMm, labelSizeRef.current);
+      const nextRect = resizeRect(resizeState.baseRect, resizeState.handle, dxMm, dyMm);
       updateElementRect(
         resizeState.elementId,
         {
@@ -977,6 +977,24 @@ export function CanvasStage({ systemFonts }: CanvasStageProps) {
                       )
                     ) : element.type === "shape" ? (
                       (() => {
+                        const strokeWidth = normalizeVisualStrokeWidth(element.textStyle.strokeWidth);
+                        const strokeDashArray = normalizeVisualDashArray(element.textStyle.strokeDashArray);
+                        const strokeColor = toAlphaColor(
+                          element.textStyle.strokeColor || element.textStyle.color,
+                          element.textStyle.strokeOpacity,
+                          element.textStyle.color
+                        );
+                        const fillColor = toAlphaColor(
+                          element.textStyle.fillColor || element.textStyle.color,
+                          element.textStyle.fillOpacity,
+                          element.textStyle.color
+                        );
+                        const shapeStyle = {
+                          borderColor: strokeColor,
+                          borderWidth: `${toShapeBorderWidthPx(strokeWidth)}px`,
+                          borderStyle: strokeDashArray.length > 0 ? "dashed" : "solid",
+                          backgroundColor: fillColor,
+                        };
                         const presetId =
                           element.binding.mode === "fixed"
                             ? readShapePresetIdFromBinding(element.binding.fixedValue)
@@ -985,13 +1003,23 @@ export function CanvasStage({ systemFonts }: CanvasStageProps) {
                           return (
                             <div
                               className="shape-preview shape-preview-preset"
-                              style={{ borderColor: element.textStyle.color }}
+                              style={shapeStyle}
                             >
                               <PresetGlyph
                                 kind="shape"
                                 presetId={presetId}
                                 className="shape-preset-svg"
-                                color={element.textStyle.color}
+                                strokeColor={strokeColor}
+                                fillColor={element.textStyle.fillColor}
+                                strokeWidth={strokeWidth}
+                                strokeOpacity={element.textStyle.strokeOpacity}
+                                fillOpacity={element.textStyle.fillOpacity}
+                                strokeLineCap={element.textStyle.strokeLineCap}
+                                strokeLineJoin={element.textStyle.strokeLineJoin}
+                                strokeDashArray={strokeDashArray}
+                                strokeDashOffset={element.textStyle.strokeDashOffset}
+                                strokeMiterLimit={element.textStyle.strokeMiterLimit}
+                                fillRule={element.textStyle.fillRule}
                               />
                             </div>
                           );
@@ -1004,7 +1032,7 @@ export function CanvasStage({ systemFonts }: CanvasStageProps) {
                           );
                         }
                         return (
-                          <div className="shape-preview" style={{ borderColor: element.textStyle.color }}>
+                          <div className="shape-preview" style={shapeStyle}>
                             <span className="shape-preview-text">{preview || "Shape"}</span>
                           </div>
                         );
@@ -1022,7 +1050,17 @@ export function CanvasStage({ systemFonts }: CanvasStageProps) {
                                 kind="icon"
                                 presetId={presetId}
                                 className="icon-preset-svg"
-                                color={element.textStyle.color}
+                                strokeColor={element.textStyle.strokeColor || element.textStyle.color}
+                                fillColor={element.textStyle.fillColor}
+                                strokeWidth={element.textStyle.strokeWidth}
+                                strokeOpacity={element.textStyle.strokeOpacity}
+                                fillOpacity={element.textStyle.fillOpacity}
+                                strokeLineCap={element.textStyle.strokeLineCap}
+                                strokeLineJoin={element.textStyle.strokeLineJoin}
+                                strokeDashArray={element.textStyle.strokeDashArray}
+                                strokeDashOffset={element.textStyle.strokeDashOffset}
+                                strokeMiterLimit={element.textStyle.strokeMiterLimit}
+                                fillRule={element.textStyle.fillRule}
                               />
                             </div>
                           );
@@ -1040,7 +1078,11 @@ export function CanvasStage({ systemFonts }: CanvasStageProps) {
                               className="icon-preview-glyph"
                               style={{
                                 fontFamily: element.textStyle.fontFamily,
-                                color: element.textStyle.color,
+                                color: toAlphaColor(
+                                  element.textStyle.strokeColor || element.textStyle.color,
+                                  element.textStyle.strokeOpacity,
+                                  element.textStyle.color
+                                ),
                                 fontWeight: element.textStyle.fontWeight,
                               }}
                             >
@@ -1191,8 +1233,7 @@ function resizeRect(
   base: { xMm: number; yMm: number; widthMm: number; heightMm: number },
   handle: ResizeHandle,
   dxMm: number,
-  dyMm: number,
-  labelSize: { widthMm: number; heightMm: number }
+  dyMm: number
 ) {
   let xMm = base.xMm;
   let yMm = base.yMm;
@@ -1227,10 +1268,8 @@ function resizeRect(
     heightMm = MIN_ELEMENT_MM;
   }
 
-  xMm = clamp(xMm, 0, labelSize.widthMm - MIN_ELEMENT_MM);
-  yMm = clamp(yMm, 0, labelSize.heightMm - MIN_ELEMENT_MM);
-  widthMm = clamp(widthMm, MIN_ELEMENT_MM, labelSize.widthMm - xMm);
-  heightMm = clamp(heightMm, MIN_ELEMENT_MM, labelSize.heightMm - yMm);
+  widthMm = Math.max(MIN_ELEMENT_MM, widthMm);
+  heightMm = Math.max(MIN_ELEMENT_MM, heightMm);
 
   return { xMm, yMm, widthMm, heightMm };
 }

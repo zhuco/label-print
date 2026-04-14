@@ -322,6 +322,10 @@ function buildRecentEntryLookupKey(fileName: string, filePath: string | null): s
   return `name:${normalizeDocumentLookupKey(fileName)}`;
 }
 
+function buildRecentNameLookupKey(fileName: string): string {
+  return normalizeRecentFileName(fileName, fileName).trim().toLocaleLowerCase("zh-CN");
+}
+
 function padRecentDateUnit(value: number): string {
   return value.toString().padStart(2, "0");
 }
@@ -1175,7 +1179,8 @@ export default function App() {
 
   const saveTemplateBundleWithDialog = async (
     bundle: Uint8Array,
-    suggestedBaseName: string
+    suggestedBaseName: string,
+    validateTarget?: (fileName: string, filePath: string | null) => void
   ): Promise<SaveTemplateResult> => {
     const pickerWindow = window as SaveFilePickerWindow;
     const suggestedName = `${sanitizeFileName(suggestedBaseName)}.lpt`;
@@ -1193,14 +1198,17 @@ export default function App() {
           },
         ],
       });
+      const pickedFileName = handle.name?.trim() || suggestedName;
+      validateTarget?.(pickedFileName, null);
       await writeTemplateBundleToHandle(bundle, handle);
       return {
         mode: "picker",
-        fileName: handle.name?.trim() || suggestedName,
+        fileName: pickedFileName,
         handle,
       };
     }
 
+    validateTarget?.(suggestedName, null);
     const url = URL.createObjectURL(new Blob([fileBuffer], { type: "application/octet-stream" }));
     const link = document.createElement("a");
     link.href = url;
@@ -1217,20 +1225,25 @@ export default function App() {
 
   const saveTemplateBundleToKnownTarget = async (
     bundle: Uint8Array,
-    handle: SaveFileHandle
+    handle: SaveFileHandle,
+    validateTarget?: (fileName: string, filePath: string | null) => void
   ): Promise<SaveTemplateResult> => {
+    const targetFileName = handle.name?.trim() || "label-template.lpt";
+    validateTarget?.(targetFileName, null);
     await writeTemplateBundleToHandle(bundle, handle);
     return {
       mode: "direct",
-      fileName: handle.name?.trim() || "label-template.lpt",
+      fileName: targetFileName,
       handle,
     };
   };
 
   const saveTemplateBundleToKnownPath = async (
     bundle: Uint8Array,
-    filePath: string
+    filePath: string,
+    validateTarget?: (fileName: string, filePath: string | null) => void
   ): Promise<SaveTemplateResult> => {
+    validateTarget?.(filePath, filePath);
     const result = await saveTemplateFile(filePath, bundle);
     if (!result) {
       throw new Error("当前运行环境不支持按路径保存。");
@@ -1255,24 +1268,50 @@ export default function App() {
       const explicitName = name?.trim() || "";
       const snapshot = buildTemplateSnapshot(document);
       const packed = packTemplateBundle(snapshot);
+      const currentDocumentLookupKey = buildRecentEntryLookupKey(document.title, document.filePath);
+      const validateTargetName = (candidateFileName: string, candidateFilePath: string | null) => {
+        const candidateNameKey = buildRecentNameLookupKey(candidateFileName);
+        if (!candidateNameKey) {
+          return;
+        }
+        const candidatePath = resolveKnownDocumentPath(candidateFilePath);
+        const conflict = recentOpenedItems.some((item) => {
+          if (buildRecentNameLookupKey(item.fileName) !== candidateNameKey) {
+            return false;
+          }
+          const itemLookupKey = buildRecentEntryLookupKey(item.fileName, item.filePath ?? null);
+          if (itemLookupKey === currentDocumentLookupKey) {
+            return false;
+          }
+          const itemPath = resolveKnownDocumentPath(item.filePath ?? null);
+          if (candidatePath && itemPath && normalizeDocumentLookupKey(candidatePath) === normalizeDocumentLookupKey(itemPath)) {
+            return false;
+          }
+          return true;
+        });
+        if (conflict) {
+          const displayName = normalizeRecentFileName(candidateFileName, explicitName || snapshot.title);
+          throw new Error(`模板名称“${displayName}”已存在于历史记录，请更换名称后再保存。`);
+        }
+      };
 
       let result: SaveTemplateResult;
       if (!explicitName) {
         if (isDdlDocumentPath(document.filePath)) {
-          result = await saveTemplateBundleWithDialog(packed, document.title);
+          result = await saveTemplateBundleWithDialog(packed, document.title, validateTargetName);
         } else {
-        const knownHandle = savedFileHandlesRef.current.get(document.id);
-        const knownPath = resolveKnownDocumentPath(document.filePath);
-        if (knownHandle) {
-          result = await saveTemplateBundleToKnownTarget(packed, knownHandle);
-        } else if (knownPath) {
-          result = await saveTemplateBundleToKnownPath(packed, knownPath);
-        } else {
-          result = await saveTemplateBundleWithDialog(packed, document.title);
-        }
+          const knownHandle = savedFileHandlesRef.current.get(document.id);
+          const knownPath = resolveKnownDocumentPath(document.filePath);
+          if (knownHandle) {
+            result = await saveTemplateBundleToKnownTarget(packed, knownHandle, validateTargetName);
+          } else if (knownPath) {
+            result = await saveTemplateBundleToKnownPath(packed, knownPath, validateTargetName);
+          } else {
+            result = await saveTemplateBundleWithDialog(packed, document.title, validateTargetName);
+          }
         }
       } else {
-        result = await saveTemplateBundleWithDialog(packed, explicitName);
+        result = await saveTemplateBundleWithDialog(packed, explicitName, validateTargetName);
       }
 
       if (result.handle) {

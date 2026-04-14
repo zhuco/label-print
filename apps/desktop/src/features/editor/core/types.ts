@@ -56,6 +56,17 @@ export type TextStyle = {
   strikeThrough?: boolean;
   align: "left" | "center" | "right";
   color: string;
+  strokeWidth?: number;
+  strokeColor?: string;
+  fillColor?: string;
+  strokeOpacity?: number;
+  fillOpacity?: number;
+  strokeLineCap?: "butt" | "round" | "square";
+  strokeLineJoin?: "miter" | "round" | "bevel";
+  strokeDashArray?: number[] | string;
+  strokeDashOffset?: number;
+  strokeMiterLimit?: number;
+  fillRule?: "nonzero" | "evenodd";
   letterSpacing: number;
   lineHeight: number;
   widthScale?: number;

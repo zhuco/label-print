@@ -12,10 +12,21 @@ import {
 import { buildIndustryTemplateElements } from "./core/industry-templates";
 import {
   getIconPreset,
+  getVisualPresetAspectRatio,
   getShapePreset,
   toIconPresetBindingValue,
   toShapePresetBindingValue,
 } from "./core/visual-presets";
+import {
+  normalizeVisualDashArray,
+  normalizeVisualDashOffset,
+  normalizeVisualFillRule,
+  normalizeVisualLineCap,
+  normalizeVisualLineJoin,
+  normalizeVisualMiterLimit,
+  normalizeVisualOpacity,
+  normalizeVisualStrokeWidth,
+} from "./core/visual-style";
 import { readCustomPresets, type CustomPreset, writeCustomPresets } from "./core/custom-presets";
 import type {
   AlignMode,
@@ -265,6 +276,46 @@ function calcAdaptiveVisualElement(labelSize: LabelSize, ratio = 0.42, min = 10,
   const xMm = round1(clamp((labelSize.widthMm - widthMm) / 2, 0, Math.max(0, labelSize.widthMm - widthMm)));
   const yMm = round1(clamp((labelSize.heightMm - heightMm) / 2, 0, Math.max(0, labelSize.heightMm - heightMm)));
   return { xMm, yMm, widthMm, heightMm };
+}
+
+function fitRectToAspect(
+  rect: { xMm: number; yMm: number; widthMm: number; heightMm: number },
+  aspectRatio: number
+): { xMm: number; yMm: number; widthMm: number; heightMm: number } {
+  if (!Number.isFinite(aspectRatio) || aspectRatio <= 0) {
+    return rect;
+  }
+
+  const baseWidth = Math.max(1, rect.widthMm);
+  const baseHeight = Math.max(1, rect.heightMm);
+  let widthMm = baseWidth;
+  let heightMm = baseHeight;
+
+  if (aspectRatio >= 1) {
+    heightMm = baseWidth / aspectRatio;
+    if (heightMm > baseHeight) {
+      heightMm = baseHeight;
+      widthMm = baseHeight * aspectRatio;
+    }
+  } else {
+    widthMm = baseHeight * aspectRatio;
+    if (widthMm > baseWidth) {
+      widthMm = baseWidth;
+      heightMm = baseWidth / aspectRatio;
+    }
+  }
+
+  widthMm = round1(Math.max(1, widthMm));
+  heightMm = round1(Math.max(1, heightMm));
+  const centerX = rect.xMm + rect.widthMm / 2;
+  const centerY = rect.yMm + rect.heightMm / 2;
+
+  return {
+    xMm: round1(centerX - widthMm / 2),
+    yMm: round1(centerY - heightMm / 2),
+    widthMm,
+    heightMm,
+  };
 }
 
 function buildCustomPresetId(): string {
@@ -564,13 +615,25 @@ export const useEditorStore = create<EditorState>((set) => ({
         (document) => {
           const preset = input?.presetId ? getShapePreset(input.presetId) : null;
           const adaptive = calcAdaptiveVisualElement(document.labelSize, 0.56, 12, 26);
+          const aspectRatio = preset ? getVisualPresetAspectRatio("shape", preset.id) : null;
+          const fitted = aspectRatio
+            ? fitRectToAspect(
+                {
+                  xMm: adaptive.xMm,
+                  yMm: adaptive.yMm,
+                  widthMm: adaptive.widthMm,
+                  heightMm: adaptive.heightMm,
+                },
+                aspectRatio
+              )
+            : adaptive;
           const element = createShapeElement({
             id: nextElementId("shape"),
             name: preset?.label ?? undefined,
-            xMm: adaptive.xMm,
-            yMm: adaptive.yMm,
-            widthMm: adaptive.widthMm,
-            heightMm: Math.max(8, adaptive.heightMm * 0.58),
+            xMm: fitted.xMm,
+            yMm: fitted.yMm,
+            widthMm: fitted.widthMm,
+            heightMm: fitted.heightMm,
             binding: preset
               ? {
                   mode: "fixed",
@@ -595,13 +658,25 @@ export const useEditorStore = create<EditorState>((set) => ({
         (document) => {
           const preset = input?.presetId ? getIconPreset(input.presetId) : null;
           const adaptive = calcAdaptiveVisualElement(document.labelSize, 0.34, 8, 14);
+          const aspectRatio = preset ? getVisualPresetAspectRatio("icon", preset.id) : null;
+          const fitted = aspectRatio
+            ? fitRectToAspect(
+                {
+                  xMm: adaptive.xMm,
+                  yMm: adaptive.yMm,
+                  widthMm: adaptive.widthMm,
+                  heightMm: adaptive.heightMm,
+                },
+                aspectRatio
+              )
+            : adaptive;
           const element = createIconElement({
             id: nextElementId("icon"),
             name: preset?.label ?? undefined,
-            xMm: adaptive.xMm,
-            yMm: adaptive.yMm,
-            widthMm: adaptive.widthMm,
-            heightMm: adaptive.heightMm,
+            xMm: fitted.xMm,
+            yMm: fitted.yMm,
+            widthMm: fitted.widthMm,
+            heightMm: fitted.heightMm,
             binding: preset
               ? {
                   mode: "fixed",
@@ -856,6 +931,33 @@ export const useEditorStore = create<EditorState>((set) => ({
       };
       if (typeof normalizedPatch.fontSize === "number" && Number.isFinite(normalizedPatch.fontSize)) {
         normalizedPatch.fontSize = round1(Math.max(0.1, normalizedPatch.fontSize));
+      }
+      if (typeof normalizedPatch.strokeWidth === "number" && Number.isFinite(normalizedPatch.strokeWidth)) {
+        normalizedPatch.strokeWidth = normalizeVisualStrokeWidth(normalizedPatch.strokeWidth);
+      }
+      if (normalizedPatch.strokeOpacity !== undefined) {
+        normalizedPatch.strokeOpacity = normalizeVisualOpacity(normalizedPatch.strokeOpacity);
+      }
+      if (normalizedPatch.fillOpacity !== undefined) {
+        normalizedPatch.fillOpacity = normalizeVisualOpacity(normalizedPatch.fillOpacity);
+      }
+      if (normalizedPatch.strokeLineCap !== undefined) {
+        normalizedPatch.strokeLineCap = normalizeVisualLineCap(normalizedPatch.strokeLineCap);
+      }
+      if (normalizedPatch.strokeLineJoin !== undefined) {
+        normalizedPatch.strokeLineJoin = normalizeVisualLineJoin(normalizedPatch.strokeLineJoin);
+      }
+      if (normalizedPatch.strokeDashArray !== undefined) {
+        normalizedPatch.strokeDashArray = normalizeVisualDashArray(normalizedPatch.strokeDashArray);
+      }
+      if (normalizedPatch.strokeDashOffset !== undefined) {
+        normalizedPatch.strokeDashOffset = normalizeVisualDashOffset(normalizedPatch.strokeDashOffset);
+      }
+      if (normalizedPatch.strokeMiterLimit !== undefined) {
+        normalizedPatch.strokeMiterLimit = normalizeVisualMiterLimit(normalizedPatch.strokeMiterLimit);
+      }
+      if (normalizedPatch.fillRule !== undefined) {
+        normalizedPatch.fillRule = normalizeVisualFillRule(normalizedPatch.fillRule);
       }
       return {
         documents: updateActiveDocument(
