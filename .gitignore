@@ -8,6 +8,7 @@ coverage/
 # Local runtime artifacts
 *.log
 *.db
+/release/
 
 # Local template/sample artifacts
 *.lpt
@@ -15,6 +16,7 @@ coverage/
 
 # Tauri / Rust
 apps/desktop/src-tauri/target/
+apps/desktop/src-tauri/target-win7/
 apps/desktop/src-tauri/gen/
 **/*.rs.bk
 

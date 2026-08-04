@@ -122,8 +122,11 @@ export async function listSystemPrinters(): Promise<string[]> {
       const normalized = normalizePrinterNames(printers);
       writeCachedSystemPrinters(normalized);
       return normalized;
-    } catch {
-      return [];
+    } catch (error) {
+      if (isTauriUnavailable(error)) {
+        return [];
+      }
+      throw error;
     } finally {
       inFlightSystemPrintersRequest = null;
     }

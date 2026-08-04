@@ -875,6 +875,11 @@ export default function App() {
       if (nextPrinters.length > 0 && (!currentPrinter || !nextPrinters.includes(currentPrinter))) {
         setPrinterConfig({ printerId: nextPrinters[0] });
       }
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      if (!background) {
+        setSubmitStatus(`读取系统打印机失败：${message}`);
+      }
     } finally {
       printerRefreshPendingRef.current = false;
       if (!background) {
@@ -926,7 +931,7 @@ export default function App() {
     if (!printOpen || hasLoadedSystemPrinters) {
       return;
     }
-    void refreshSystemPrinters(true);
+    void refreshSystemPrinters(false);
   }, [hasLoadedSystemPrinters, printOpen, refreshSystemPrinters]);
 
   useEffect(() => {

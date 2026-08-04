@@ -18,6 +18,15 @@ export type SelectionRectMm = {
   bottomMm: number;
 };
 
+export type ElementBounds = {
+  left: number;
+  top: number;
+  right: number;
+  bottom: number;
+  width: number;
+  height: number;
+};
+
 export function buildSnapTargets(elements: EditorElement[], labelSize: LabelSize): SnapTargets {
   const xTargets = new Set<number>([0, labelSize.widthMm / 2, labelSize.widthMm]);
   const yTargets = new Set<number>([0, labelSize.heightMm / 2, labelSize.heightMm]);
@@ -96,7 +105,10 @@ export function alignSelectedElements(
     return elements;
   }
 
-  const bounds = getBounds(selected);
+  const bounds = getElementBounds(selected);
+  if (!bounds) {
+    return elements;
+  }
 
   return elements.map((element) => {
     if (!selectedIdSet.has(element.id)) {
@@ -125,6 +137,80 @@ export function alignSelectedElements(
       };
     }
     return { ...element, yMm: bounds.bottom - element.heightMm };
+  });
+}
+
+export function getElementBounds(elements: EditorElement[]): ElementBounds | null {
+  if (elements.length === 0) {
+    return null;
+  }
+
+  const left = Math.min(...elements.map((item) => item.xMm));
+  const top = Math.min(...elements.map((item) => item.yMm));
+  const right = Math.max(...elements.map((item) => item.xMm + item.widthMm));
+  const bottom = Math.max(...elements.map((item) => item.yMm + item.heightMm));
+
+  return {
+    left,
+    top,
+    right,
+    bottom,
+    width: right - left,
+    height: bottom - top,
+  };
+}
+
+export function scaleSelectedElements(
+  elements: EditorElement[],
+  selectedIds: string[],
+  anchor: { xMm: number; yMm: number },
+  scale: number
+): EditorElement[] {
+  if (!Number.isFinite(scale) || scale <= 0) {
+    return elements;
+  }
+
+  const selectedIdSet = new Set(selectedIds);
+  return elements.map((element) => {
+    if (!selectedIdSet.has(element.id)) {
+      return element;
+    }
+
+    const scaled = {
+      ...element,
+      xMm: round1(anchor.xMm + (element.xMm - anchor.xMm) * scale),
+      yMm: round1(anchor.yMm + (element.yMm - anchor.yMm) * scale),
+      widthMm: round1(element.widthMm * scale),
+      heightMm: round1(element.heightMm * scale),
+      textStyle: {
+        ...element.textStyle,
+        fontSize: round1(Math.max(0.1, element.textStyle.fontSize * scale)),
+        letterSpacing: round1(element.textStyle.letterSpacing * scale),
+        strokeWidth:
+          element.textStyle.strokeWidth === undefined
+            ? undefined
+            : round1(Math.max(0, element.textStyle.strokeWidth * scale)),
+        strokeDashOffset:
+          element.textStyle.strokeDashOffset === undefined
+            ? undefined
+            : round1(element.textStyle.strokeDashOffset * scale),
+      },
+    };
+
+    if (scaled.type !== "barcode") {
+      return scaled;
+    }
+
+    return {
+      ...scaled,
+      barcode: {
+        ...scaled.barcode,
+        moduleWidth: round2(Math.max(0.1, scaled.barcode.moduleWidth * scale)),
+        textGap: round1(Math.max(0, scaled.barcode.textGap * scale)),
+        quietZone: round1(Math.max(0, scaled.barcode.quietZone * scale)),
+        minHeight: round1(Math.max(3, scaled.barcode.minHeight * scale)),
+      },
+    };
   });
 }
 
@@ -182,18 +268,10 @@ function findNearestSnap(
   return best;
 }
 
-function getBounds(elements: EditorElement[]) {
-  const left = Math.min(...elements.map((item) => item.xMm));
-  const top = Math.min(...elements.map((item) => item.yMm));
-  const right = Math.max(...elements.map((item) => item.xMm + item.widthMm));
-  const bottom = Math.max(...elements.map((item) => item.yMm + item.heightMm));
+function round1(value: number): number {
+  return Math.round(value * 10) / 10;
+}
 
-  return {
-    left,
-    top,
-    right,
-    bottom,
-    width: right - left,
-    height: bottom - top,
-  };
+function round2(value: number): number {
+  return Math.round(value * 100) / 100;
 }

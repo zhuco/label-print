@@ -17,7 +17,15 @@ import { QrcodePreview } from "./QrcodePreview";
 import { resolveBindingValue } from "./core/binding";
 import { buildBarcodeTextStyle } from "./core/barcode-text-style";
 import { DEFAULT_FONT_OPTIONS, type FontOption, withCurrentFont } from "./core/font-options";
-import { buildSnapTargets, selectElementsByRect, snapElementPosition, type SnapTargets } from "./core/layout";
+import {
+  buildSnapTargets,
+  getElementBounds,
+  scaleSelectedElements,
+  selectElementsByRect,
+  snapElementPosition,
+  type ElementBounds,
+  type SnapTargets,
+} from "./core/layout";
 import { buildRulerTicks, isMajorRulerTick, shouldShowRulerLabel } from "./core/ruler";
 import { buildTextDecoration, computeSingleLineScaleX } from "./core/text-style";
 import type { EditorElement, TextStyle } from "./core/types";
@@ -58,6 +66,20 @@ type ResizeState = {
   };
 };
 
+type GroupResizeHandle = "nw" | "ne" | "sw" | "se";
+
+type GroupResizeState = {
+  handle: GroupResizeHandle;
+  startClientX: number;
+  startClientY: number;
+  anchor: { xMm: number; yMm: number };
+  baseVector: { xMm: number; yMm: number };
+  minScale: number;
+  maxScale: number;
+  selectedIds: string[];
+  baseElements: EditorElement[];
+};
+
 type EditingState = {
   elementId: string;
   value: string;
@@ -77,6 +99,7 @@ type ContextMenuState = {
 };
 
 const RESIZE_HANDLES: ResizeHandle[] = ["nw", "n", "ne", "w", "e", "sw", "s", "se"];
+const GROUP_RESIZE_HANDLES: GroupResizeHandle[] = ["nw", "ne", "sw", "se"];
 
 type CanvasStageProps = {
   systemFonts: FontOption[];
@@ -104,6 +127,7 @@ export function CanvasStage({ systemFonts }: CanvasStageProps) {
 
   const [dragState, setDragState] = useState<DragState | null>(null);
   const [resizeState, setResizeState] = useState<ResizeState | null>(null);
+  const [groupResizeState, setGroupResizeState] = useState<GroupResizeState | null>(null);
   const [marqueeState, setMarqueeState] = useState<MarqueeState | null>(null);
   const [contextMenu, setContextMenu] = useState<ContextMenuState | null>(null);
   const [savePresetModalOpen, setSavePresetModalOpen] = useState(false);
@@ -166,6 +190,14 @@ export function CanvasStage({ systemFonts }: CanvasStageProps) {
     const fromSaved = customPresets.map((item) => item.category.trim()).filter((item) => item.length > 0);
     return [...new Set([...DEFAULT_CUSTOM_PRESET_CATEGORIES, ...fromSaved])];
   }, [customPresets]);
+  const selectedElements = useMemo(() => {
+    const selectedIdSet = new Set(selectedIds);
+    return elements.filter((element) => selectedIdSet.has(element.id));
+  }, [elements, selectedIds]);
+  const groupSelectionBounds = useMemo(
+    () => (selectedElements.length > 1 ? getElementBounds(selectedElements) : null),
+    [selectedElements]
+  );
 
   const stageStyle = useMemo(
     () => ({
@@ -298,6 +330,37 @@ export function CanvasStage({ systemFonts }: CanvasStageProps) {
     });
   };
 
+  const startGroupResize = (
+    event: ReactMouseEvent,
+    handle: GroupResizeHandle,
+    bounds: ElementBounds
+  ) => {
+    event.preventDefault();
+    event.stopPropagation();
+
+    const geometry = resolveGroupResizeGeometry(handle, bounds);
+    const currentSelectedIds = [...selectedIdsRef.current];
+    const selectedIdSet = new Set(currentSelectedIds);
+    const selected = elementsRef.current.filter((element) => selectedIdSet.has(element.id));
+    if (selected.length <= 1) {
+      return;
+    }
+
+    const minScale = getMinimumGroupScale(selected);
+    pushHistoryCheckpoint();
+    setGroupResizeState({
+      handle,
+      startClientX: event.clientX,
+      startClientY: event.clientY,
+      anchor: geometry.anchor,
+      baseVector: geometry.baseVector,
+      minScale,
+      maxScale: Math.max(minScale, getMaximumGroupScale(bounds, geometry.anchor, labelSizeRef.current)),
+      selectedIds: currentSelectedIds,
+      baseElements: elementsRef.current,
+    });
+  };
+
   const startEditing = (event: ReactMouseEvent, element: EditorElement) => {
     event.preventDefault();
     event.stopPropagation();
@@ -409,6 +472,49 @@ export function CanvasStage({ systemFonts }: CanvasStageProps) {
     };
   }, [mmToPx, resizeState, updateElementRect]);
 
+  useEffect(() => {
+    if (!groupResizeState) {
+      return;
+    }
+
+    const onMove = (event: MouseEvent) => {
+      const dxMm = (event.clientX - groupResizeState.startClientX) / mmToPx;
+      const dyMm = (event.clientY - groupResizeState.startClientY) / mmToPx;
+      const currentVector = {
+        xMm: groupResizeState.baseVector.xMm + dxMm,
+        yMm: groupResizeState.baseVector.yMm + dyMm,
+      };
+      const vectorLengthSquared =
+        groupResizeState.baseVector.xMm ** 2 + groupResizeState.baseVector.yMm ** 2;
+      const projectedScale =
+        vectorLengthSquared <= 0
+          ? 1
+          : (currentVector.xMm * groupResizeState.baseVector.xMm +
+              currentVector.yMm * groupResizeState.baseVector.yMm) /
+            vectorLengthSquared;
+      const scale = clamp(projectedScale, groupResizeState.minScale, groupResizeState.maxScale);
+
+      replaceElements(
+        scaleSelectedElements(
+          groupResizeState.baseElements,
+          groupResizeState.selectedIds,
+          groupResizeState.anchor,
+          scale
+        ),
+        [],
+        false
+      );
+    };
+
+    const onUp = () => setGroupResizeState(null);
+    window.addEventListener("mousemove", onMove);
+    window.addEventListener("mouseup", onUp);
+    return () => {
+      window.removeEventListener("mousemove", onMove);
+      window.removeEventListener("mouseup", onUp);
+    };
+  }, [groupResizeState, mmToPx, replaceElements]);
+
   const onWheelZoom = (event: WheelEvent<HTMLDivElement>) => {
     event.preventDefault();
     const ratio = event.deltaY < 0 ? 1.08 : 0.92;
@@ -466,7 +572,7 @@ export function CanvasStage({ systemFonts }: CanvasStageProps) {
     if (event.button !== 0) {
       return;
     }
-    if (editingRef.current || resizeState || dragState) {
+    if (editingRef.current || resizeState || groupResizeState || dragState) {
       return;
     }
 
@@ -780,8 +886,8 @@ export function CanvasStage({ systemFonts }: CanvasStageProps) {
             >
               {elements.map((element) => {
                 const isSelected = selectedIds.includes(element.id);
-                const preview = resolveBindingValue(element.binding, previewRecord);
                 const isEditing = editing?.elementId === element.id;
+                const preview = isEditing ? editing.value : resolveBindingValue(element.binding, previewRecord);
                 const showResizeHandles = isSelected && selectedIds.length === 1;
                 const isAutoWrap = element.textStyle.wrapMode !== "singleLine";
                 const noWrapScaleX =
@@ -809,8 +915,7 @@ export function CanvasStage({ systemFonts }: CanvasStageProps) {
                     onContextMenu={(event) => onElementContextMenu(event, element)}
                     onDoubleClick={(event) => startEditing(event, element)}
                   >
-                    {isEditing ? (
-                      element.type === "text" ? (
+                    {isEditing && element.type === "text" ? (
                         <textarea
                           autoFocus
                           className="inline-editor inline-editor-multiline"
@@ -842,38 +947,6 @@ export function CanvasStage({ systemFonts }: CanvasStageProps) {
                           onKeyDown={onTextareaKeyDown}
                           onFocus={selectAllOnFocus}
                         />
-                      ) : (
-                        <input
-                          autoFocus
-                          className="inline-editor"
-                          value={editing.value}
-                          onMouseDown={(event) => event.stopPropagation()}
-                          style={{
-                            fontFamily: element.textStyle.fontFamily,
-                            fontSize: `${Math.max(1, element.textStyle.fontSize * mmToPx)}px`,
-                            fontWeight: element.textStyle.fontWeight,
-                            fontStyle: element.textStyle.italic ? "italic" : "normal",
-                            textDecoration: buildTextDecoration(element.textStyle),
-                            textAlign: element.textStyle.align,
-                            color: element.textStyle.color,
-                            letterSpacing: `${element.textStyle.letterSpacing * mmToPx}px`,
-                            lineHeight: element.textStyle.lineHeight,
-                          }}
-                          onChange={(event) =>
-                            setEditing((current) =>
-                              current
-                                ? {
-                                    ...current,
-                                    value: event.target.value,
-                                  }
-                                : current
-                            )
-                          }
-                          onBlur={commitEditing}
-                          onKeyDown={onInputKeyDown}
-                          onFocus={selectAllOnFocus}
-                        />
-                      )
                     ) : element.type === "text" ? (
                       <div
                         className="element-content"
@@ -996,7 +1069,9 @@ export function CanvasStage({ systemFonts }: CanvasStageProps) {
                           backgroundColor: fillColor,
                         };
                         const presetId =
-                          element.binding.mode === "fixed"
+                          isEditing
+                            ? readShapePresetIdFromBinding(preview)
+                            : element.binding.mode === "fixed"
                             ? readShapePresetIdFromBinding(element.binding.fixedValue)
                             : null;
                         if (presetId) {
@@ -1040,7 +1115,9 @@ export function CanvasStage({ systemFonts }: CanvasStageProps) {
                     ) : (
                       (() => {
                         const presetId =
-                          element.binding.mode === "fixed"
+                          isEditing
+                            ? readIconPresetIdFromBinding(preview)
+                            : element.binding.mode === "fixed"
                             ? readIconPresetIdFromBinding(element.binding.fixedValue)
                             : null;
                         if (presetId) {
@@ -1093,6 +1170,40 @@ export function CanvasStage({ systemFonts }: CanvasStageProps) {
                       })()
                     )}
 
+                    {isEditing && element.type !== "text" ? (
+                      <input
+                        autoFocus
+                        aria-label="编辑内容（实时预览）"
+                        className="inline-editor inline-editor-popover"
+                        value={editing.value}
+                        onMouseDown={(event) => event.stopPropagation()}
+                        style={{
+                          fontFamily: element.textStyle.fontFamily,
+                          fontSize: `${Math.max(1, element.textStyle.fontSize * mmToPx)}px`,
+                          fontWeight: element.textStyle.fontWeight,
+                          fontStyle: element.textStyle.italic ? "italic" : "normal",
+                          textDecoration: buildTextDecoration(element.textStyle),
+                          textAlign: element.textStyle.align,
+                          color: element.textStyle.color,
+                          letterSpacing: `${element.textStyle.letterSpacing * mmToPx}px`,
+                          lineHeight: element.textStyle.lineHeight,
+                        }}
+                        onChange={(event) =>
+                          setEditing((current) =>
+                            current
+                              ? {
+                                  ...current,
+                                  value: event.target.value,
+                                }
+                              : current
+                          )
+                        }
+                        onBlur={commitEditing}
+                        onKeyDown={onInputKeyDown}
+                        onFocus={selectAllOnFocus}
+                      />
+                    ) : null}
+
                     {showResizeHandles
                       ? RESIZE_HANDLES.map((handle) => (
                           <span
@@ -1105,6 +1216,28 @@ export function CanvasStage({ systemFonts }: CanvasStageProps) {
                   </div>
                 );
               })}
+
+              {groupSelectionBounds ? (
+                <div
+                  className="group-selection-box"
+                  aria-label="整体缩放所选组件"
+                  style={{
+                    left: groupSelectionBounds.left * mmToPx,
+                    top: groupSelectionBounds.top * mmToPx,
+                    width: groupSelectionBounds.width * mmToPx,
+                    height: groupSelectionBounds.height * mmToPx,
+                  }}
+                >
+                  <span className="group-selection-label">整体缩放</span>
+                  {GROUP_RESIZE_HANDLES.map((handle) => (
+                    <span
+                      key={`group-${handle}`}
+                      className={`resize-handle ${handle}`}
+                      onMouseDown={(event) => startGroupResize(event, handle, groupSelectionBounds)}
+                    />
+                  ))}
+                </div>
+              ) : null}
 
               {snapGuides.map((guide, index) => (
                 <div
@@ -1227,6 +1360,60 @@ function toStagePoint(clientX: number, clientY: number, stage: HTMLDivElement) {
     x: clamp(clientX - rect.left, 0, width),
     y: clamp(clientY - rect.top, 0, height),
   };
+}
+
+function resolveGroupResizeGeometry(handle: GroupResizeHandle, bounds: ElementBounds) {
+  const anchor = {
+    xMm: handle.includes("w") ? bounds.right : bounds.left,
+    yMm: handle.includes("n") ? bounds.bottom : bounds.top,
+  };
+  const movingCorner = {
+    xMm: handle.includes("w") ? bounds.left : bounds.right,
+    yMm: handle.includes("n") ? bounds.top : bounds.bottom,
+  };
+  return {
+    anchor,
+    baseVector: {
+      xMm: movingCorner.xMm - anchor.xMm,
+      yMm: movingCorner.yMm - anchor.yMm,
+    },
+  };
+}
+
+function getMinimumGroupScale(elements: EditorElement[]): number {
+  return elements.reduce((minimum, element) => {
+    const minWidthMm = element.type === "barcode" ? 8 : MIN_ELEMENT_MM;
+    const minHeightMm = element.type === "barcode" ? 3 : MIN_ELEMENT_MM;
+    return Math.max(
+      minimum,
+      minWidthMm / Math.max(element.widthMm, MIN_ELEMENT_MM),
+      minHeightMm / Math.max(element.heightMm, MIN_ELEMENT_MM)
+    );
+  }, 0.05);
+}
+
+function getMaximumGroupScale(
+  bounds: ElementBounds,
+  anchor: { xMm: number; yMm: number },
+  labelSize: { widthMm: number; heightMm: number }
+): number {
+  let maximum = Number.POSITIVE_INFINITY;
+  const constraints = [
+    { delta: bounds.left - anchor.xMm, negativeSpace: anchor.xMm, positiveSpace: labelSize.widthMm - anchor.xMm },
+    { delta: bounds.right - anchor.xMm, negativeSpace: anchor.xMm, positiveSpace: labelSize.widthMm - anchor.xMm },
+    { delta: bounds.top - anchor.yMm, negativeSpace: anchor.yMm, positiveSpace: labelSize.heightMm - anchor.yMm },
+    { delta: bounds.bottom - anchor.yMm, negativeSpace: anchor.yMm, positiveSpace: labelSize.heightMm - anchor.yMm },
+  ];
+
+  for (const constraint of constraints) {
+    if (constraint.delta < 0) {
+      maximum = Math.min(maximum, constraint.negativeSpace / -constraint.delta);
+    } else if (constraint.delta > 0) {
+      maximum = Math.min(maximum, constraint.positiveSpace / constraint.delta);
+    }
+  }
+
+  return Number.isFinite(maximum) ? Math.max(0.05, maximum) : 10;
 }
 
 function resizeRect(

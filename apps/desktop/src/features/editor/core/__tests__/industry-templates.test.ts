@@ -25,6 +25,42 @@ describe("industry templates", () => {
     expect(elements.some((element) => element.type === "qrcode")).toBe(true);
   });
 
+  it("fits a template to the current canvas and keeps every item editable", () => {
+    const labelSize = { widthMm: 25, heightMm: 20 };
+    const elements = buildIndustryTemplateElements("asset-tag", labelSize, (type) => `${type}-fit`);
+
+    expect(elements.length).toBeGreaterThan(0);
+    for (const element of elements) {
+      expect(element.xMm).toBeGreaterThanOrEqual(0);
+      expect(element.yMm).toBeGreaterThanOrEqual(0);
+      expect(element.xMm + element.widthMm).toBeLessThanOrEqual(labelSize.widthMm);
+      expect(element.yMm + element.heightMm).toBeLessThanOrEqual(labelSize.heightMm);
+      expect(element.binding.mode).toBe("fixed");
+    }
+  });
+
+  it("scales text together with the template when fitting a smaller canvas", () => {
+    const large = buildIndustryTemplateElements(
+      "food-label",
+      { widthMm: 60, heightMm: 40 },
+      (type) => `${type}-large`
+    );
+    const small = buildIndustryTemplateElements(
+      "food-label",
+      { widthMm: 30, heightMm: 20 },
+      (type) => `${type}-small`
+    );
+
+    const largeText = large.filter((element) => element.type === "text" || element.type === "barcode");
+    const smallText = small.filter((element) => element.type === "text" || element.type === "barcode");
+    expect(smallText).toHaveLength(largeText.length);
+    smallText.forEach((element, index) => {
+      expect(Math.abs(element.textStyle.fontSize - largeText[index].textStyle.fontSize * 0.5)).toBeLessThanOrEqual(
+        0.1
+      );
+    });
+  });
+
   it("returns null for unknown template id", () => {
     expect(getIndustryTemplate("missing-template")).toBeNull();
   });

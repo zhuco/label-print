@@ -126,20 +126,20 @@ fn decode_base64(value: &str) -> Result<Vec<u8>, String> {
 }
 
 struct OcrEngine {
-    #[cfg(target_os = "windows")]
+    #[cfg(all(target_os = "windows", feature = "winrt-ocr"))]
     winrt: Option<WinRtOcrEngine>,
 }
 
 impl OcrEngine {
     fn new() -> Self {
         Self {
-            #[cfg(target_os = "windows")]
+            #[cfg(all(target_os = "windows", feature = "winrt-ocr"))]
             winrt: WinRtOcrEngine::try_new().ok(),
         }
     }
 
     fn recognize(&mut self, image_bytes: &[u8]) -> Result<Vec<SidecarTextItem>, String> {
-        #[cfg(target_os = "windows")]
+        #[cfg(all(target_os = "windows", feature = "winrt-ocr"))]
         {
             if let Some(engine) = self.winrt.as_ref() {
                 match engine.recognize(image_bytes) {
@@ -155,12 +155,12 @@ impl OcrEngine {
     }
 }
 
-#[cfg(target_os = "windows")]
+#[cfg(all(target_os = "windows", feature = "winrt-ocr"))]
 struct WinRtOcrEngine {
     engine: windows::Media::Ocr::OcrEngine,
 }
 
-#[cfg(target_os = "windows")]
+#[cfg(all(target_os = "windows", feature = "winrt-ocr"))]
 impl WinRtOcrEngine {
     fn try_new() -> Result<Self, String> {
         let engine = windows::Media::Ocr::OcrEngine::TryCreateFromUserProfileLanguages()
@@ -240,7 +240,7 @@ impl WinRtOcrEngine {
     }
 }
 
-#[cfg(target_os = "windows")]
+#[cfg(all(target_os = "windows", feature = "winrt-ocr"))]
 fn windows_error_message(error: windows::core::Error) -> String {
     let code = error.code().0;
     let message = error.message().to_string();

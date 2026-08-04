@@ -3,6 +3,8 @@ import { describe, expect, it } from "vitest";
 import {
   alignSelectedElements,
   buildSnapTargets,
+  getElementBounds,
+  scaleSelectedElements,
   selectElementsByRect,
   snapElementPosition,
 } from "../layout";
@@ -50,5 +52,34 @@ describe("layout and snapping", () => {
     });
 
     expect(selected).toEqual(["first", "second"]);
+  });
+
+  it("scales a multi-element selection from a shared anchor", () => {
+    const first = createTextElement({
+      id: "first",
+      xMm: 10,
+      yMm: 10,
+      widthMm: 20,
+      heightMm: 6,
+      textStyle: { fontSize: 4 },
+    });
+    const second = createTextElement({ id: "second", xMm: 40, yMm: 20, widthMm: 10, heightMm: 5 });
+    const other = createTextElement({ id: "other", xMm: 2, yMm: 2 });
+
+    const scaled = scaleSelectedElements(
+      [first, second, other],
+      ["first", "second"],
+      { xMm: 10, yMm: 10 },
+      0.5
+    );
+
+    expect(getElementBounds(scaled.filter((item) => item.id !== "other"))).toMatchObject({
+      left: 10,
+      top: 10,
+      right: 30,
+      bottom: 17.5,
+    });
+    expect(scaled.find((item) => item.id === "first")?.textStyle.fontSize).toBe(2);
+    expect(scaled.find((item) => item.id === "other")?.xMm).toBe(2);
   });
 });

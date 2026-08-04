@@ -71,7 +71,12 @@ export type IndustryTemplate = {
   iconPresetId: string;
 };
 
-const MIN_ELEMENT_SIZE_MM = 2.5;
+const MIN_ELEMENT_SIZE_MM = 0.5;
+const MIN_TEMPLATE_FONT_SIZE_MM = 0.5;
+const DEFAULT_TEMPLATE_REFERENCE_LABEL_SIZE: LabelSize = {
+  widthMm: 60,
+  heightMm: 40,
+};
 
 const FOOD_DDL_REFERENCE_LABEL_SIZE: LabelSize = {
   widthMm: 60,
@@ -222,15 +227,22 @@ function toRatioRectByReference(rect: RectMm, reference: LabelSize): RectRatio {
 
 function scaleFontByReference(labelSize: LabelSize, reference: LabelSize, referenceFontSizeMm: number): number {
   const scale = Math.min(labelSize.widthMm / reference.widthMm, labelSize.heightMm / reference.heightMm);
-  return round1(clamp(referenceFontSizeMm * scale, 2, 14));
+  return round1(clamp(referenceFontSizeMm * scale, MIN_TEMPLATE_FONT_SIZE_MM, 14));
 }
 
-function calcTemplateFontSize(labelSize: LabelSize, heightMm: number, maxFontSizeMm?: number): number {
-  const shortEdge = Math.min(labelSize.widthMm, labelSize.heightMm);
-  const byEdge = shortEdge * 0.18;
-  const byHeight = heightMm * 0.62;
+function calcTemplateFontSize(labelSize: LabelSize, rect: RectRatio, maxFontSizeMm?: number): number {
+  const scale = Math.min(
+    labelSize.widthMm / DEFAULT_TEMPLATE_REFERENCE_LABEL_SIZE.widthMm,
+    labelSize.heightMm / DEFAULT_TEMPLATE_REFERENCE_LABEL_SIZE.heightMm
+  );
+  const referenceShortEdge = Math.min(
+    DEFAULT_TEMPLATE_REFERENCE_LABEL_SIZE.widthMm,
+    DEFAULT_TEMPLATE_REFERENCE_LABEL_SIZE.heightMm
+  );
+  const byEdge = referenceShortEdge * 0.18;
+  const byHeight = DEFAULT_TEMPLATE_REFERENCE_LABEL_SIZE.heightMm * rect.height * 0.62;
   const upper = maxFontSizeMm ?? 10;
-  return round1(clamp(Math.min(byEdge, byHeight), 2.4, upper));
+  return round1(clamp(Math.min(byEdge, byHeight, upper) * scale, MIN_TEMPLATE_FONT_SIZE_MM, 14));
 }
 
 function buildTextElement(context: BuilderContext, spec: TextSpec): EditorElement {
@@ -244,7 +256,7 @@ function buildTextElement(context: BuilderContext, spec: TextSpec): EditorElemen
       fixedValue: spec.value,
     },
     textStyle: {
-      fontSize: calcTemplateFontSize(context.labelSize, rect.heightMm, spec.maxFontSizeMm),
+      fontSize: calcTemplateFontSize(context.labelSize, spec.rect, spec.maxFontSizeMm),
       ...spec.style,
     },
   });
@@ -261,11 +273,11 @@ function buildBarcodeElement(context: BuilderContext, spec: BarcodeSpec): Editor
       fixedValue: spec.value,
     },
     textStyle: {
-      fontSize: calcTemplateFontSize(context.labelSize, rect.heightMm, 4.6),
+      fontSize: calcTemplateFontSize(context.labelSize, spec.rect, 4.6),
       align: "center",
     },
     barcode: {
-      minHeight: Math.max(4, round1(rect.heightMm * 0.62)),
+      minHeight: Math.max(1, round1(rect.heightMm * 0.62)),
       textPosition: "bottom",
     },
   });

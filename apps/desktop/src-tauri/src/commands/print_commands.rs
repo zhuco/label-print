@@ -1,7 +1,11 @@
 use std::collections::HashSet;
 use std::fs;
+#[cfg(target_os = "windows")]
+use std::mem::{size_of, MaybeUninit};
 use std::path::{Path, PathBuf};
 use std::process::Command;
+#[cfg(target_os = "windows")]
+use std::ptr;
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use base64::Engine;
@@ -85,12 +89,35 @@ pub fn submit_print_task(
 
 #[tauri::command]
 pub fn list_system_printers() -> Result<Vec<String>, String> {
+    #[cfg(target_os = "windows")]
+    {
+        // Use the native spooler API first. It is present on Windows 7 and does
+        // not require PowerShell, WMI, or a separately installed module.
+        let printers = list_printers_from_winspool()?;
+        if !printers.is_empty() {
+            return Ok(printers);
+        }
+    }
+
+    list_printers_with_powershell()
+}
+
+fn list_printers_with_powershell() -> Result<Vec<String>, String> {
     let script = r#"
 $ErrorActionPreference = 'Stop'
 $names = New-Object System.Collections.Generic.HashSet[string]
 
 try {
   Get-CimInstance Win32_Printer | ForEach-Object {
+    if ($_.Name) { $null = $names.Add([string]$_.Name) }
+  }
+}
+catch {}
+
+# Windows 7 ships with PowerShell 2.0: it has Get-WmiObject, but not
+# Get-CimInstance or the PrintManagement module used by Get-Printer.
+try {
+  Get-WmiObject -Class Win32_Printer | ForEach-Object {
     if ($_.Name) { $null = $names.Add([string]$_.Name) }
   }
 }
@@ -103,6 +130,15 @@ try {
 }
 catch {}
 
+# Keep a second legacy-compatible source for systems where WMI is unavailable.
+try {
+  Add-Type -AssemblyName System.Drawing
+  [System.Drawing.Printing.PrinterSettings]::InstalledPrinters | ForEach-Object {
+    if ($_ ) { $null = $names.Add([string]$_) }
+  }
+}
+catch {}
+
 $sorted = @($names | Sort-Object)
 $json = $sorted | ConvertTo-Json -Compress
 $bytes = [System.Text.Encoding]::UTF8.GetBytes($json)
@@ -110,6 +146,102 @@ $bytes = [System.Text.Encoding]::UTF8.GetBytes($json)
 "#;
     let output = run_powershell_script(script, &[])?;
     parse_printers_from_powershell_stdout(&output.stdout)
+}
+
+#[cfg(target_os = "windows")]
+#[repr(C)]
+struct PrinterInfo4W {
+    printer_name: *const u16,
+    server_name: *const u16,
+    attributes: u32,
+}
+
+#[cfg(target_os = "windows")]
+#[link(name = "Winspool")]
+extern "system" {
+    fn EnumPrintersW(
+        flags: u32,
+        name: *const u16,
+        level: u32,
+        printer_enum: *mut u8,
+        cb_buf: u32,
+        pcb_needed: *mut u32,
+        pc_returned: *mut u32,
+    ) -> i32;
+}
+
+#[cfg(target_os = "windows")]
+fn list_printers_from_winspool() -> Result<Vec<String>, String> {
+    const PRINTER_ENUM_LOCAL: u32 = 0x0000_0002;
+    const PRINTER_ENUM_CONNECTIONS: u32 = 0x0000_0004;
+    const PRINTER_INFO_LEVEL: u32 = 4;
+
+    let mut needed_bytes = 0_u32;
+    let mut returned = 0_u32;
+    unsafe {
+        EnumPrintersW(
+            PRINTER_ENUM_LOCAL | PRINTER_ENUM_CONNECTIONS,
+            ptr::null(),
+            PRINTER_INFO_LEVEL,
+            ptr::null_mut(),
+            0,
+            &mut needed_bytes,
+            &mut returned,
+        );
+    }
+    if needed_bytes == 0 {
+        return Ok(Vec::new());
+    }
+
+    let entry_size = size_of::<PrinterInfo4W>();
+    let entry_capacity = (needed_bytes as usize).div_ceil(entry_size);
+    let mut buffer = Vec::<MaybeUninit<PrinterInfo4W>>::with_capacity(entry_capacity);
+    unsafe {
+        buffer.set_len(entry_capacity);
+    }
+
+    let success = unsafe {
+        EnumPrintersW(
+            PRINTER_ENUM_LOCAL | PRINTER_ENUM_CONNECTIONS,
+            ptr::null(),
+            PRINTER_INFO_LEVEL,
+            buffer.as_mut_ptr().cast::<u8>(),
+            needed_bytes,
+            &mut needed_bytes,
+            &mut returned,
+        )
+    };
+    if success == 0 {
+        return Err("Windows printer spooler enumeration failed".to_string());
+    }
+    if returned as usize > entry_capacity {
+        return Err("Windows printer spooler returned invalid data".to_string());
+    }
+
+    let entries = unsafe {
+        std::slice::from_raw_parts(buffer.as_ptr().cast::<PrinterInfo4W>(), returned as usize)
+    };
+    let mut printers = entries
+        .iter()
+        .filter_map(|entry| unsafe { wide_string_from_ptr(entry.printer_name) })
+        .map(|name| name.trim().to_string())
+        .filter(|name| !name.is_empty())
+        .collect::<Vec<_>>();
+    printers.sort_unstable();
+    printers.dedup();
+    Ok(printers)
+}
+
+#[cfg(target_os = "windows")]
+unsafe fn wide_string_from_ptr(value: *const u16) -> Option<String> {
+    const MAX_PRINTER_NAME_UNITS: usize = 32_768;
+    if value.is_null() {
+        return None;
+    }
+    let len = (0..MAX_PRINTER_NAME_UNITS).find(|&index| unsafe { *value.add(index) == 0 })?;
+    Some(String::from_utf16_lossy(unsafe {
+        std::slice::from_raw_parts(value, len)
+    }))
 }
 
 #[tauri::command]

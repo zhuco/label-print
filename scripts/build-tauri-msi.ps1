@@ -261,9 +261,22 @@ $desktop = Join-Path $root "apps\desktop"
 $tauriConfigPath = Join-Path $desktop "src-tauri\tauri.conf.json"
 $tauriTools = Join-Path $env:LOCALAPPDATA "tauri\WixTools314"
 $wixDir = Join-Path $desktop "src-tauri\target\release\wix\x64"
-$msiOut = Join-Path $desktop "src-tauri\target\release\bundle\msi"
+$releaseDir = Join-Path $root "release"
 
 try {
+    if (-not (Get-Command node -ErrorAction SilentlyContinue)) {
+        $pnpmCommand = Get-Command pnpm -ErrorAction SilentlyContinue
+        if ($null -eq $pnpmCommand) {
+            throw "Node.js (or pnpm with its bundled Node.js runtime) is required"
+        }
+        $pnpmRuntimeRoot = Split-Path (Split-Path (Split-Path $pnpmCommand.Source -Parent) -Parent) -Parent
+        $bundledNode = Join-Path $pnpmRuntimeRoot "node\bin\node.exe"
+        if (-not (Test-Path -LiteralPath $bundledNode -PathType Leaf)) {
+            throw "Node.js is required"
+        }
+        $env:PATH = "$(Split-Path $bundledNode -Parent);$env:PATH"
+    }
+
     Sync-BrandIcons -Root $root -Desktop $desktop
 
     if (-not $SkipPnpmBuild) {
@@ -305,7 +318,7 @@ try {
     $webviewInstallModeType = Get-WebviewInstallModeType -TauriConfig $tauriConfig
     Write-Host "WebView2 安装模式：$webviewInstallModeType"
     if ($webviewInstallModeType -like "downloadBootstrapper*") {
-        Write-Warning "当前为在线下载 WebView2 模式。离线/受限网络环境可能在“正在收集信息”阶段长时间无响应，建议改为 offlineInstaller。"
+        Write-Warning "WebView2 online download mode is enabled; the installer needs network access when WebView2 is missing."
     }
     $shortcutDescription = [string]$tauriConfig.bundle.fileAssociations[0].name
     if ([string]::IsNullOrWhiteSpace($shortcutDescription)) {
@@ -342,23 +355,27 @@ try {
         Pop-Location
     }
 
-    if (-not (Test-Path $msiOut)) {
-        New-Item -ItemType Directory -Path $msiOut | Out-Null
+    if (-not (Test-Path $releaseDir)) {
+        New-Item -ItemType Directory -Path $releaseDir | Out-Null
     }
 
-    $safeProductName = Get-SafeFileNamePart -Text $productName -Fallback "label-desktop"
     $safeVersion = Get-SafeFileNamePart -Text $version -Fallback "0.0.0"
-    $outMsiName = "{0}_{1}_x64_zh-CN.msi" -f $safeProductName, $safeVersion
-    $outMsi = Join-Path $msiOut $outMsiName
+    $outMsiName = "label-desktop_{0}_win11_x64.msi" -f $safeVersion
+    $outMsi = Join-Path $releaseDir $outMsiName
     Write-Host "链接 MSI 包..."
     Push-Location $wixDir
     try {
-        Invoke-External -FilePath $light -Arguments @("-ext", "WixUIExtension", "-loc", "locale.wxl", "-out", $outMsi, "main.wixobj")
+        Invoke-External -FilePath $light -Arguments @("-ext", "WixUIExtension", "-spdb", "-loc", "locale.wxl", "-out", $outMsi, "main.wixobj")
     } finally {
         Pop-Location
     }
-    Write-Host "MSI 已生成：$outMsi"
-    Write-Host "如安装异常，可执行：msiexec /i `"$outMsi`" /L*V `"$env:TEMP\$safeProductName-install.log`""
+    $outWixPdb = [IO.Path]::ChangeExtension($outMsi, ".wixpdb")
+    if (Test-Path -LiteralPath $outWixPdb -PathType Leaf) {
+        Remove-Item -LiteralPath $outWixPdb -Force
+    }
+    Write-Host "Win11 MSI 已生成：$outMsi"
+    Write-Host "如安装异常，可执行：msiexec /i `"$outMsi`" /L*V `"$env:TEMP\label-desktop-install.log`""
+    $global:LASTEXITCODE = 0
 } catch {
     Write-Host "发生错误：" -ForegroundColor Red
     Write-Host $_.Exception.Message -ForegroundColor Red
