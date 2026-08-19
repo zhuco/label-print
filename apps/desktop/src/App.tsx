@@ -138,6 +138,18 @@ type SaveDialogRequest = {
   closeAfterSave: boolean;
 };
 
+function suggestSaveAsName(name: string, cloudLabels: CachedCloudLabel[]): string {
+  const normalizedName = name.trim() || "未命名标签";
+  const usedNames = new Set(cloudLabels.map((label) => label.name.trim().toLocaleLowerCase("zh-CN")));
+  let candidate = `${normalizedName} 副本`;
+  let sequence = 2;
+  while (usedNames.has(candidate.toLocaleLowerCase("zh-CN"))) {
+    candidate = `${normalizedName} 副本 ${sequence}`;
+    sequence += 1;
+  }
+  return candidate;
+}
+
 type CloseConfirmRequest =
   | {
       kind: "tab";
@@ -1067,6 +1079,10 @@ export default function App() {
             revision: next.revision,
             syncStatus: next.syncStatus,
           });
+          const document = useEditorStore.getState().documents.find((item) => item.id === documentId);
+          if (document?.filePath === `cloud://${previousId}`) {
+            setDocumentFileMeta(documentId, `cloud://${next.id}`, document.title);
+          }
         }
       });
       setRecentOpenedItems((current) => {
@@ -1111,7 +1127,7 @@ export default function App() {
       window.removeEventListener("focus", syncPendingAndRefresh);
       window.clearInterval(retryInterval);
     };
-  }, [cloudRepository, cloudSession, recentTemplateStore, refreshCloudLabels, refreshCloudProfile]);
+  }, [cloudRepository, cloudSession, recentTemplateStore, refreshCloudLabels, refreshCloudProfile, setDocumentFileMeta]);
 
   const markDocumentSavedBySnapshot = (documentId: string, snapshot: TemplateSnapshot) => {
     savedDocumentSignaturesRef.current.set(documentId, toSnapshotSignature(cloneSnapshot(snapshot)));
@@ -1855,7 +1871,7 @@ export default function App() {
     }
     setSaveDialogRequest({
       documentId: document.id,
-      name: document.title,
+      name: forceSaveAs ? suggestSaveAsName(document.title, cloudLabels) : document.title,
       destination,
       categoryId: cloudBindingsRef.current.get(document.id)
         ? cloudLabels.find((label) => label.id === cloudBindingsRef.current.get(document.id)?.id)?.categoryId
@@ -1881,7 +1897,11 @@ export default function App() {
     const request = saveDialogRequest;
     try {
       const saved = request.destination === "cloud"
-        ? await onSaveToCloud(request.documentId, { name, categoryId: request.categoryId })
+        ? await onSaveToCloud(request.documentId, {
+            name,
+            categoryId: request.categoryId,
+            createNew: request.forceSaveAs,
+          })
         : await onSaveTemplate(
             request.forceSaveAs
             || useEditorStore.getState().documents.find((item) => item.id === request.documentId)?.title !== name
@@ -1902,7 +1922,7 @@ export default function App() {
 
   const onSaveToCloud = async (
     documentId?: string,
-    options?: { name?: string; categoryId?: string | null }
+    options?: { name?: string; categoryId?: string | null; createNew?: boolean }
   ): Promise<boolean> => {
     const document = useEditorStore
       .getState()
@@ -1934,7 +1954,7 @@ export default function App() {
         // into managed assets before its later server request.
         content = sourceContent;
       }
-      const binding = cloudBindingsRef.current.get(document.id);
+      const binding = options?.createNew ? undefined : cloudBindingsRef.current.get(document.id);
       const saved = binding
         ? await cloudRepository.update(binding.id, { expectedRevision: binding.revision, content })
         : await cloudRepository.create({ name: desiredName, content });
@@ -1957,7 +1977,7 @@ export default function App() {
       }
       cloudBindingsRef.current.set(document.id, finalBinding);
       const savedSnapshot = { ...snapshot, title: desiredName };
-      if (desiredName !== document.title) setDocumentTitle(document.id, desiredName);
+      setDocumentFileMeta(document.id, `cloud://${finalBinding.id}`, desiredName);
       markDocumentSavedBySnapshot(document.id, savedSnapshot);
       rememberRecentOpened(desiredName, savedSnapshot, {
         source: "cloud",
@@ -1965,7 +1985,9 @@ export default function App() {
       });
       await Promise.all([refreshCloudLabels(), refreshCloudProfile()]);
       setToolbarStatus(
-        finalBinding.syncStatus === "synced" ? "已保存到云端。" : "已写入本地缓存，离线时将自动同步。"
+        finalBinding.syncStatus === "synced"
+          ? options?.createNew ? "已另存为新的云标签。" : "已保存到云端。"
+          : options?.createNew ? "已另存为新的云标签并写入本地缓存，联网后将自动同步。" : "已写入本地缓存，离线时将自动同步。"
       );
       return true;
     } catch (error) {
@@ -3275,10 +3297,10 @@ export default function App() {
                 <button
                   type="button"
                   className="tool-ghost file-menu-item"
-                  data-testid="cmd-export-local"
+                  data-testid="cmd-save-as"
                   onClick={() => {
                     setFileMenuOpen(false);
-                    openSaveDialog("local", true);
+                    openSaveDialog("cloud", true);
                   }}
                 >
                   另存为...
@@ -3669,7 +3691,7 @@ export default function App() {
             onClick={(event) => event.stopPropagation()}
           >
             <header className="modal-header">
-              <h3 id="save-dialog-title">保存标签</h3>
+              <h3 id="save-dialog-title">{saveDialogRequest.forceSaveAs ? "另存为标签" : "保存标签"}</h3>
               <button
                 type="button"
                 onClick={() => setSaveDialogRequest(null)}
@@ -3782,7 +3804,7 @@ export default function App() {
                 onClick={() => void confirmSaveDialog()}
                 disabled={saveDialogPending || !saveDialogRequest.name.trim() || (saveDialogRequest.destination === "cloud" && !cloudSession.user)}
               >
-                {saveDialogPending ? "正在保存..." : "保存"}
+                {saveDialogPending ? "正在保存..." : saveDialogRequest.forceSaveAs ? "另存为" : "保存"}
               </button>
             </footer>
           </section>
@@ -3900,5 +3922,3 @@ export default function App() {
     </main>
   );
 }
-
-

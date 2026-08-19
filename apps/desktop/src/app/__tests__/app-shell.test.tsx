@@ -30,6 +30,13 @@ vi.mock("../../services/ipc/launch-files", () => ({
 }));
 
 import App, { shouldOpenCloudAuthOnStartup } from "../../App";
+import {
+  CloudApiClient,
+  CloudAuthSession,
+  CloudLabelRepository,
+  type CachedCloudLabel,
+} from "../../features/cloud";
+import type { CloudLabelContentV1 } from "@label/template-schema";
 import { resetEditorStoreForTests, useEditorStore } from "../../features/editor/editor.store";
 
 const DDL_IMPORT_SAMPLE = `<?xml version="1.0" encoding="UTF-8"?>
@@ -50,6 +57,29 @@ const DDL_IMPORT_SAMPLE = `<?xml version="1.0" encoding="UTF-8"?>
     </labelobjects>
   </paper>
 </DLabel>`;
+
+function makeCloudLabel(
+  id: string,
+  name: string,
+  content: CloudLabelContentV1,
+  revision: number
+): CachedCloudLabel {
+  const timestamp = "2026-08-19T00:00:00.000Z";
+  return {
+    id,
+    name,
+    categoryId: null,
+    schemaVersion: content.version,
+    revision,
+    createdAt: timestamp,
+    updatedAt: timestamp,
+    deletedAt: null,
+    lastOpenedAt: timestamp,
+    content,
+    syncStatus: "synced",
+    lastSyncedAt: timestamp,
+  };
+}
 
 describe("App shell", () => {
   it("opens the cloud login at production startup only when no session is restored", () => {
@@ -100,6 +130,7 @@ describe("App shell", () => {
 
   afterEach(() => {
     cleanup();
+    vi.restoreAllMocks();
   });
 
   beforeEach(() => {
@@ -448,6 +479,74 @@ describe("App shell", () => {
 
     await waitFor(() => {
       expect(clickSpy).toHaveBeenCalledTimes(1);
+    });
+  });
+
+  it("saves a bound cloud label as a new cloud copy and binds later saves to that copy", async () => {
+    const user = {
+      id: "user-save-as",
+      displayName: "另存为测试",
+      plan: "free" as const,
+      planExpiresAt: null,
+      labelUsage: { used: 1, limit: 50, canCreate: true },
+    };
+    vi.spyOn(CloudAuthSession.prototype, "state", "get").mockReturnValue({ status: "authenticated", user });
+    vi.spyOn(CloudAuthSession.prototype, "user", "get").mockReturnValue(user);
+    vi.spyOn(CloudAuthSession.prototype, "restore").mockResolvedValue({ status: "authenticated", user });
+    vi.spyOn(CloudAuthSession.prototype, "refreshProfile").mockResolvedValue(user);
+    vi.spyOn(CloudApiClient.prototype, "listLabelCategories").mockResolvedValue([]);
+
+    const createdLabels = new Map<string, ReturnType<typeof makeCloudLabel>>();
+    let createdSequence = 0;
+    const createSpy = vi.spyOn(CloudLabelRepository.prototype, "create").mockImplementation(async (input) => {
+      createdSequence += 1;
+      const label = makeCloudLabel(`cloud-${createdSequence}`, input.name, input.content, 1);
+      createdLabels.set(label.id, label);
+      return label;
+    });
+    const updateSpy = vi.spyOn(CloudLabelRepository.prototype, "update").mockImplementation(async (id, input) => {
+      const current = createdLabels.get(id);
+      expect(current).toBeDefined();
+      const updated = makeCloudLabel(id, current!.name, input.content, input.expectedRevision + 1);
+      createdLabels.set(id, updated);
+      return updated;
+    });
+    vi.spyOn(CloudLabelRepository.prototype, "list").mockImplementation(async () => ({
+      items: Array.from(createdLabels.values()),
+      nextCursor: null,
+      source: "cloud",
+    }));
+
+    const { container } = render(<App />);
+    enterEditorMode(container);
+
+    fireEvent.click(screen.getByTestId("cmd-save"));
+    fireEvent.click(within(screen.getByRole("dialog", { name: "保存标签" })).getByRole("button", { name: "保存" }));
+    await waitFor(() => expect(createSpy).toHaveBeenCalledTimes(1));
+
+    fireEvent.click(screen.getByRole("button", { name: "文件" }));
+    fireEvent.click(screen.getByRole("button", { name: "另存为..." }));
+    const saveAsDialog = screen.getByRole("dialog", { name: "另存为标签" });
+    expect(screen.getByRole("button", { name: /云端标签/ })).toHaveClass("active");
+    const nameInput = within(saveAsDialog).getByRole("textbox", { name: "标签名称" });
+    expect(nameInput).toHaveValue("新建标签1 副本");
+    fireEvent.change(nameInput, { target: { value: "云端副本" } });
+    fireEvent.click(within(saveAsDialog).getByRole("button", { name: "另存为" }));
+
+    await waitFor(() => {
+      expect(createSpy).toHaveBeenCalledTimes(2);
+      expect(updateSpy).not.toHaveBeenCalled();
+      expect(container.querySelector(".command-status")?.textContent).toContain("已另存为新的云标签");
+      expect(container.querySelector(".doc-tab.active > button")?.textContent).toBe("云端副本");
+    });
+
+    useEditorStore.getState().addTextElement();
+    fireEvent.click(screen.getByTestId("cmd-save"));
+    await waitFor(() => {
+      expect(updateSpy).toHaveBeenCalledWith(
+        "cloud-2",
+        expect.objectContaining({ expectedRevision: 1 })
+      );
     });
   });
 
