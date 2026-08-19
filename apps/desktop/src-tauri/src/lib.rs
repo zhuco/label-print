@@ -199,14 +199,40 @@ pub fn run() {
             }
             focus_main_window(app);
         }))
+        // The updater's public key and dynamic API endpoint live in the release
+        // configuration, never in the desktop source or user data.  Keeping the
+        // plugin registered here lets the frontend expose a safe manual update
+        // flow while development builds simply report no configured source.
+        .plugin(tauri_plugin_updater::Builder::new().build())
         .manage(AppState {
             conn: Mutex::new(conn),
             pending_launch_files: Mutex::new(launch_files),
         })
         .invoke_handler(tauri::generate_handler![
+            commands::cloud_commands::cloud_load_credentials,
+            commands::cloud_commands::cloud_save_credentials,
+            commands::cloud_commands::cloud_clear_credentials,
+            commands::cloud_commands::cloud_cache_list_labels,
+            commands::cloud_commands::cloud_cache_get_label,
+            commands::cloud_commands::cloud_cache_put_label,
+            commands::cloud_commands::cloud_cache_remove_label,
+            commands::cloud_commands::cloud_cache_replace_label_id,
+            commands::cloud_commands::cloud_cache_clear_user,
+            commands::cloud_commands::cloud_asset_cache_get,
+            commands::cloud_commands::cloud_asset_cache_put,
+            commands::cloud_commands::cloud_asset_cache_clear_user,
+            commands::cloud_commands::cloud_sync_enqueue,
+            commands::cloud_commands::cloud_sync_list,
+            commands::cloud_commands::cloud_sync_update,
+            commands::cloud_commands::cloud_sync_remove,
+            commands::custom_preset_commands::custom_presets_list,
+            commands::custom_preset_commands::custom_presets_replace_all,
+            commands::recent_commands::recent_templates_list,
+            commands::recent_commands::recent_templates_replace_all,
             commands::font_commands::list_system_fonts,
             commands::launch_commands::consume_launch_files,
             commands::template_commands::open_template_file,
+            commands::template_commands::pick_template_save_path,
             commands::template_commands::save_template,
             commands::template_commands::save_template_file,
             commands::template_commands::list_templates,
@@ -214,6 +240,7 @@ pub fn run() {
             commands::print_commands::submit_print_task,
             commands::print_commands::list_system_printers,
             commands::print_commands::submit_direct_print,
+            commands::print_commands::reveal_pdf_output,
             commands::print_commands::pause_print_job,
             commands::print_commands::resume_print_job,
             commands::print_commands::cancel_print_job,

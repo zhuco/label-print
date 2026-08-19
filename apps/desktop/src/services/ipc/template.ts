@@ -8,16 +8,25 @@ type TauriWindow = {
   };
 };
 
-const LOCAL_TEMPLATE_KEY = "label-print.templates";
-
 export type TemplateDto = {
   id: number;
   name: string;
   content: string;
 };
 
+// The unsupported browser/preview path remains usable within one session, but complete template
+// contents must never be serialised into localStorage. The production Tauri path persists them
+// through the SQLite-backed native template repository.
+let memoryTemplates: TemplateDto[] = [];
+
 type SaveTemplateFileResult = {
   fileName: string;
+};
+
+type PickTemplateSavePathResult = {
+  fileName: string;
+  filePath: string;
+  replacingExisting: boolean;
 };
 
 type OpenTemplateFileResult = {
@@ -30,6 +39,18 @@ export type PickTemplateFileResult =
   | {
       status: "selected";
       file: OpenTemplateFileResult;
+    }
+  | {
+      status: "cancelled";
+    }
+  | {
+      status: "unsupported";
+    };
+
+export type PickTemplateSavePathSelection =
+  | {
+      status: "selected";
+      file: PickTemplateSavePathResult;
     }
   | {
       status: "cancelled";
@@ -65,39 +86,11 @@ async function invokeDesktop<T>(command: string, args?: Record<string, unknown>)
 }
 
 function readLocalTemplates(): TemplateDto[] {
-  if (typeof localStorage === "undefined") {
-    return [];
-  }
-
-  try {
-    const raw = localStorage.getItem(LOCAL_TEMPLATE_KEY);
-    if (!raw) {
-      return [];
-    }
-    const parsed = JSON.parse(raw) as unknown;
-    if (!Array.isArray(parsed)) {
-      return [];
-    }
-    return parsed
-      .map((item) => {
-        const row = item as Partial<TemplateDto>;
-        if (typeof row.id !== "number" || typeof row.name !== "string" || typeof row.content !== "string") {
-          return null;
-        }
-        return row as TemplateDto;
-      })
-      .filter((item): item is TemplateDto => item !== null)
-      .sort((a, b) => b.id - a.id);
-  } catch {
-    return [];
-  }
+  return memoryTemplates.map((template) => ({ ...template }));
 }
 
 function writeLocalTemplates(templates: TemplateDto[]) {
-  if (typeof localStorage === "undefined") {
-    return;
-  }
-  localStorage.setItem(LOCAL_TEMPLATE_KEY, JSON.stringify(templates));
+  memoryTemplates = templates.map((template) => ({ ...template }));
 }
 
 export async function saveTemplate(name: string, content: string): Promise<number> {
@@ -112,7 +105,7 @@ export async function saveTemplate(name: string, content: string): Promise<numbe
   }
 
   const templates = readLocalTemplates();
-  const id = Date.now();
+  const id = Math.max(Date.now(), ...templates.map((template) => template.id + 1));
   const next = [{ id, name, content }, ...templates];
   writeLocalTemplates(next);
   return id;
@@ -159,10 +152,14 @@ function normalizeOpenTemplateFileResult(input: unknown): OpenTemplateFileResult
 }
 
 export async function pickTemplateFile(): Promise<PickTemplateFileResult> {
+  const invoke = getInvoke();
   try {
-    const result = await invokeDesktop<unknown>("open_template_file");
+    // A successful native invocation may intentionally return `null` when the
+    // user cancels the picker. Do not route that case through the browser
+    // fallback, or Windows will immediately show a second picker.
+    const result = await invoke<unknown>("open_template_file");
     if (result === null) {
-      return { status: "unsupported" };
+      return { status: "cancelled" };
     }
     if (!result) {
       return { status: "cancelled" };
@@ -175,7 +172,41 @@ export async function pickTemplateFile(): Promise<PickTemplateFileResult> {
       status: "selected",
       file: normalized,
     };
-  } catch {
+  } catch (error) {
+    if (isTauriUnavailable(error)) {
+      return { status: "unsupported" };
+    }
     return { status: "cancelled" };
+  }
+}
+
+export async function pickTemplateSavePath(suggestedName: string): Promise<PickTemplateSavePathSelection> {
+  const invoke = getInvoke();
+  try {
+    const result = await invoke<PickTemplateSavePathResult | null>("pick_template_save_path", {
+      payload: {
+        suggestedName,
+      },
+    });
+    if (result === null) {
+      return { status: "cancelled" };
+    }
+    if (
+      !result
+      || typeof result.fileName !== "string"
+      || typeof result.filePath !== "string"
+      || typeof result.replacingExisting !== "boolean"
+    ) {
+      return { status: "unsupported" };
+    }
+    return {
+      status: "selected",
+      file: result,
+    };
+  } catch (error) {
+    if (isTauriUnavailable(error)) {
+      return { status: "unsupported" };
+    }
+    throw error;
   }
 }

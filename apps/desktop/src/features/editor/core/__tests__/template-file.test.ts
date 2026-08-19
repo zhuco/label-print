@@ -95,6 +95,9 @@ function buildSnapshot(): TemplateSnapshot {
         widthMm: 10,
         heightMm: 10,
         rotation: 0,
+        groupId: "group-1",
+        presetInstanceId: "preset-instance-1",
+        sourcePresetId: "preset-1",
         binding: {
           mode: "fixed",
           fixedValue: PNG_DATA_URL,
@@ -120,6 +123,9 @@ function buildSnapshot(): TemplateSnapshot {
         widthMm: 8,
         heightMm: 8,
         rotation: 0,
+        groupId: "group-1",
+        presetInstanceId: "preset-instance-1",
+        sourcePresetId: "preset-1",
         binding: {
           mode: "fixed",
           fixedValue: "@",
@@ -161,6 +167,8 @@ describe("template bundle", () => {
     if (icon && icon.binding.mode === "fixed") {
       expect(icon.binding.fixedValue).toBe("@");
     }
+    expect(image).toMatchObject({ groupId: "group-1", presetInstanceId: "preset-instance-1", sourcePresetId: "preset-1" });
+    expect(icon).toMatchObject({ groupId: "group-1", presetInstanceId: "preset-instance-1", sourcePresetId: "preset-1" });
   });
 
   it("throws when bundle is missing required files", () => {

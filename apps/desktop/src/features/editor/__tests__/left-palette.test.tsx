@@ -6,6 +6,7 @@ import { LeftPalette } from "../LeftPalette";
 function buildProps(overrides?: Partial<Parameters<typeof LeftPalette>[0]>) {
   return {
     onAddText: vi.fn(),
+    onAddDateTime: vi.fn(),
     onAddBarcode: vi.fn(),
     onAddImage: vi.fn(),
     onRecognizeImage: vi.fn(),
@@ -55,6 +56,15 @@ describe("LeftPalette preset picker", () => {
 
     fireEvent.click(screen.getByTestId("tool-image"));
     expect(onAddImage).toHaveBeenCalledTimes(1);
+  });
+
+  it("delegates date time button click to date time creator", () => {
+    const onAddDateTime = vi.fn();
+
+    render(<LeftPalette {...buildProps({ onAddDateTime })} />);
+
+    fireEvent.click(screen.getByTestId("tool-datetime"));
+    expect(onAddDateTime).toHaveBeenCalledTimes(1);
   });
 
   it("delegates image recognition button click to recognizer", () => {

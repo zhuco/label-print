@@ -2,7 +2,7 @@ import { useRef, type ChangeEvent, type KeyboardEvent } from "react";
 
 import { useDataImportStore } from "../data-import/data-import.store";
 import { BARCODE_SYMBOLOGY_OPTIONS, getDefaultBarcodeValue } from "./core/barcode";
-import { resolveBindingValue } from "./core/binding";
+import { DEFAULT_DATE_TIME_FORMAT, resolveBindingValue } from "./core/binding";
 import { DEFAULT_FONT_OPTIONS, type FontOption, withCurrentFont } from "./core/font-options";
 import type { BarcodeSymbology, ContentBinding } from "./core/types";
 import {
@@ -43,6 +43,7 @@ type RightInspectorProps = {
 
 const HEX_COLOR_PATTERN = /^#(?:[0-9a-fA-F]{3}){1,2}$/;
 const VISUAL_FINE_STEP = 0.01;
+const POSITION_STEP_MM = 0.1;
 
 function normalizeColorForPicker(value: string | undefined, fallback = "#2a6fa8"): string {
   const trimmed = (value || "").trim();
@@ -50,6 +51,10 @@ function normalizeColorForPicker(value: string | undefined, fallback = "#2a6fa8"
     return trimmed;
   }
   return fallback;
+}
+
+function normalizePositionMm(value: number): number {
+  return Math.round((value + Number.EPSILON) / POSITION_STEP_MM) * POSITION_STEP_MM;
 }
 
 export function RightInspector({ systemFonts }: RightInspectorProps) {
@@ -137,6 +142,7 @@ export function RightInspector({ systemFonts }: RightInspectorProps) {
   };
 
   const isTextOrBarcode = selectedElement.type === "text" || selectedElement.type === "barcode";
+  const isDateTime = selectedElement.binding.mode === "datetime";
   const isVisualElement = selectedElement.type === "shape" || selectedElement.type === "icon";
   const isBold = selectedElement.textStyle.fontWeight >= 700;
   const isItalic = selectedElement.textStyle.italic;
@@ -190,35 +196,37 @@ export function RightInspector({ systemFonts }: RightInspectorProps) {
 
   return (
     <div className="inspector">
-      <p className="muted">褰撳墠瀵硅薄: {selectedElement.name}</p>
+      <p className="muted">当前对象: {selectedElement.name}</p>
 
       <section>
-        <h3>鍩虹鍙傛暟</h3>
+        <h3>基础参数</h3>
         <div className="form-grid">
           <NumericInput
-            label="姘村钩(mm)"
+            label="水平(mm)"
             value={selectedElement.xMm}
-            onChange={(value) => updateElementRect(selectedElement.id, { xMm: value })}
+            step={POSITION_STEP_MM}
+            onChange={(value) => updateElementRect(selectedElement.id, { xMm: normalizePositionMm(value) })}
           />
           <NumericInput
-            label="鍨傜洿(mm)"
+            label="垂直(mm)"
             value={selectedElement.yMm}
-            onChange={(value) => updateElementRect(selectedElement.id, { yMm: value })}
+            step={POSITION_STEP_MM}
+            onChange={(value) => updateElementRect(selectedElement.id, { yMm: normalizePositionMm(value) })}
           />
           <NumericInput
-            label="瀹?mm)"
+            label="宽(mm)"
             value={selectedElement.widthMm}
             min={1}
             onChange={(value) => updateElementRect(selectedElement.id, { widthMm: value })}
           />
           <NumericInput
-            label="楂?mm)"
+            label="高(mm)"
             value={selectedElement.heightMm}
             min={1}
             onChange={(value) => updateElementRect(selectedElement.id, { heightMm: value })}
           />
           <NumericInput
-            label="鏃嬭浆(掳)"
+            label="旋转(°)"
             value={selectedElement.rotation}
             onChange={(value) => updateElementRect(selectedElement.id, { rotation: value })}
           />
@@ -226,9 +234,9 @@ export function RightInspector({ systemFonts }: RightInspectorProps) {
       </section>
 
       <section>
-        <h3>鍐呭缁戝畾</h3>
+        <h3>内容绑定</h3>
         <label>
-          妯″紡
+          模式
           <select
             value={selectedElement.binding.mode}
             onChange={(event) =>
@@ -240,12 +248,14 @@ export function RightInspector({ systemFonts }: RightInspectorProps) {
             <option value="fixed">固定值</option>
             <option value="column">数据列</option>
             <option value="expression">表达式</option>
+            <option value="datetime">日期时间</option>
           </select>
         </label>
 
         {selectedElement.binding.mode === "fixed" ? (
           <label>
-            鍥哄畾鍊?            <textarea
+            固定值
+            <textarea
               rows={3}
               value={selectedElement.binding.fixedValue ?? ""}
               onChange={(event) => updateSelectedBinding({ fixedValue: event.target.value })}
@@ -255,7 +265,8 @@ export function RightInspector({ systemFonts }: RightInspectorProps) {
 
         {selectedElement.binding.mode === "column" ? (
           <label>
-            鏁版嵁鍒?            <select
+            数据列
+            <select
               value={selectedElement.binding.column ?? ""}
               onChange={(event) => updateSelectedBinding({ column: event.target.value })}
             >
@@ -271,27 +282,73 @@ export function RightInspector({ systemFonts }: RightInspectorProps) {
 
         {selectedElement.binding.mode === "expression" ? (
           <label>
-            琛ㄨ揪寮?            <input
+            表达式
+            <input
               value={selectedElement.binding.expression ?? ""}
               onChange={(event) => updateSelectedBinding({ expression: event.target.value })}
-              placeholder="渚嬪: ${sku}-${price}"
+              placeholder="例如: ${sku}-${price}"
             />
           </label>
         ) : null}
 
-        <p className="preview-value">棰勮鍊? {previewValue || "(绌?"}</p>
+        {isDateTime ? (
+          <>
+            <label>
+              日期时间来源
+              <select
+                value={selectedElement.binding.dateTimeSource ?? "printTime"}
+                onChange={(event) =>
+                  updateSelectedBinding({
+                    dateTimeSource: event.target.value as "fixed" | "printTime",
+                  })
+                }
+              >
+                <option value="printTime">打印日期时间</option>
+                <option value="fixed">固定值</option>
+              </select>
+            </label>
+
+            {selectedElement.binding.dateTimeSource === "fixed" ? (
+              <label>
+                固定日期时间
+                <input
+                  type="datetime-local"
+                  step="1"
+                  value={selectedElement.binding.fixedValue ?? ""}
+                  onChange={(event) => updateSelectedBinding({ fixedValue: event.target.value })}
+                />
+              </label>
+            ) : null}
+
+            <label>
+              日期时间格式
+              <select
+                value={selectedElement.binding.dateTimeFormat ?? DEFAULT_DATE_TIME_FORMAT}
+                onChange={(event) => updateSelectedBinding({ dateTimeFormat: event.target.value })}
+              >
+                <option value="YYYY-MM-DD HH:mm:ss">2026-08-08 14:30:45</option>
+                <option value="YYYY-MM-DD HH:mm">2026-08-08 14:30</option>
+                <option value="YYYY-MM-DD">2026-08-08（隐藏时间）</option>
+                <option value="YYYY/MM/DD">2026/08/08（隐藏时间）</option>
+                <option value="YYYY年MM月DD日">2026年08月08日（隐藏时间）</option>
+              </select>
+            </label>
+          </>
+        ) : null}
+
+        <p className="preview-value">预览值：{previewValue || "(空)"}</p>
       </section>
 
       {isTextOrBarcode ? (
         <section>
-          <h3>{selectedElement.type === "barcode" ? "鏂囨湰鍙傛暟(鏉＄爜鏁板瓧)" : "鏂囨湰鍙傛暟"}</h3>
+          <h3>{selectedElement.type === "barcode" ? "文本参数(条码数字)" : "文本参数"}</h3>
           <div className="form-grid text-param-grid">
             <label className="compact-control">
-              <span className="visually-hidden">瀛椾綋</span>
+              <span className="visually-hidden">字体</span>
               <select
                 value={selectedElement.textStyle.fontFamily}
-                aria-label="瀛椾綋"
-                title="瀛椾綋"
+                aria-label="字体"
+                title="字体"
                 onChange={(event) => updateSelectedTextStyle({ fontFamily: event.target.value })}
               >
                 {fontOptions.map((font) => (
@@ -302,14 +359,14 @@ export function RightInspector({ systemFonts }: RightInspectorProps) {
               </select>
             </label>
             <label className="compact-control">
-              <span className="visually-hidden">瀛楀彿</span>
+              <span className="visually-hidden">字号</span>
               <input
                 type="number"
                 min={0.1}
                 step={0.1}
                 value={Number.isFinite(selectedElement.textStyle.fontSize) ? selectedElement.textStyle.fontSize : 1}
-                aria-label="瀛楀彿"
-                title="瀛楀彿"
+                aria-label="字号"
+                title="字号"
                 onChange={(event) => {
                   const parsed = Number(event.target.value);
                   if (Number.isFinite(parsed)) {
@@ -337,8 +394,8 @@ export function RightInspector({ systemFonts }: RightInspectorProps) {
               className={`tool-ghost text-style-toggle icon-square-btn ${
                 selectedElement.textStyle.align === "center" ? "active" : ""
               }`}
-              title="灞呬腑瀵归綈"
-              aria-label="灞呬腑瀵归綈"
+              title="居中对齐"
+              aria-label="居中对齐"
               onClick={() => updateSelectedTextStyle({ align: "center" })}
             >
               <TextStyleIcon kind="align-center" className="text-style-icon" />
@@ -360,8 +417,8 @@ export function RightInspector({ systemFonts }: RightInspectorProps) {
             <button
               type="button"
               className={`tool-ghost text-style-toggle icon-square-btn ${isBold ? "active" : ""}`}
-              title="鍔犵矖"
-              aria-label="鍔犵矖"
+              title="加粗"
+              aria-label="加粗"
               onClick={() => updateSelectedTextStyle({ fontWeight: isBold ? 400 : 700 })}
             >
               <TextStyleIcon kind="bold" className="text-style-icon" />
@@ -369,8 +426,8 @@ export function RightInspector({ systemFonts }: RightInspectorProps) {
             <button
               type="button"
               className={`tool-ghost text-style-toggle icon-square-btn ${isItalic ? "active" : ""}`}
-              title="鏂滀綋"
-              aria-label="鏂滀綋"
+              title="斜体"
+              aria-label="斜体"
               onClick={() => updateSelectedTextStyle({ italic: !isItalic })}
             >
               <TextStyleIcon kind="italic" className="text-style-icon" />
@@ -399,13 +456,13 @@ export function RightInspector({ systemFonts }: RightInspectorProps) {
 
       {isVisualElement ? (
         <section>
-          <h3>鍥惧舰鏍峰紡</h3>
+          <h3>图形样式</h3>
           <div className="inline-actions">
             <label className="compact-control" style={{ minWidth: 0, flex: "1 1 180px" }}>
-              <span className="visually-hidden">鍥惧舰鏍峰紡棰勮</span>
+              <span className="visually-hidden">图形样式预设</span>
               <select
                 defaultValue=""
-                aria-label="鍥惧舰鏍峰紡棰勮"
+                aria-label="图形样式预设"
                 onChange={(event) => {
                   const nextPresetId = event.target.value;
                   if (!nextPresetId) {
@@ -415,27 +472,27 @@ export function RightInspector({ systemFonts }: RightInspectorProps) {
                   event.target.value = "";
                 }}
               >
-                <option value="">搴旂敤鍥惧舰鏍峰紡棰勮...</option>
+                <option value="">应用图形样式预设...</option>
                 {VISUAL_STYLE_PRESETS.map((preset) => (
                   <option key={preset.id} value={preset.id}>
-                    {preset.label} 路 {preset.description}
+                    {preset.label} · {preset.description}
                   </option>
                 ))}
               </select>
             </label>
             <button type="button" className="tool-ghost" onClick={resetAdvancedVisualStyle}>
-              閲嶇疆楂樼骇鍙傛暟
+              重置高级参数
             </button>
           </div>
 
           <div className="form-grid">
             <label>
-              鎻忚竟棰滆壊
+              描边颜色
               <div className="color-field-row">
                 <input
                   type="color"
                   value={visualStrokeColorPicker}
-                  aria-label="鍥惧舰鎻忚竟棰滆壊"
+                  aria-label="图形描边颜色"
                   onChange={(event) =>
                     updateSelectedTextStyle({ color: event.target.value, strokeColor: event.target.value })
                   }
@@ -453,12 +510,12 @@ export function RightInspector({ systemFonts }: RightInspectorProps) {
             </label>
 
             <label>
-              濉厖棰滆壊
+              填充颜色
               <div className="color-field-row">
                 <input
                   type="color"
                   value={visualFillColorPicker}
-                  aria-label="鍥惧舰濉厖棰滆壊"
+                  aria-label="图形填充颜色"
                   onChange={(event) => updateSelectedTextStyle({ fillColor: event.target.value })}
                 />
                 <input
@@ -472,7 +529,7 @@ export function RightInspector({ systemFonts }: RightInspectorProps) {
             </label>
 
             <label>
-              绾垮
+              线宽
               <div className="micro-adjust-row">
                 <button
                   type="button"
@@ -519,7 +576,7 @@ export function RightInspector({ systemFonts }: RightInspectorProps) {
             </label>
 
             <NumericInput
-              label="鎻忚竟閫忔槑搴?0-1)"
+              label="描边透明度(0-1)"
               value={visualStrokeOpacity}
               min={MIN_VISUAL_OPACITY}
               max={MAX_VISUAL_OPACITY}
@@ -528,7 +585,7 @@ export function RightInspector({ systemFonts }: RightInspectorProps) {
             />
 
             <NumericInput
-              label="濉厖閫忔槑搴?0-1)"
+              label="填充透明度(0-1)"
               value={visualFillOpacity}
               min={MIN_VISUAL_OPACITY}
               max={MAX_VISUAL_OPACITY}
@@ -537,7 +594,7 @@ export function RightInspector({ systemFonts }: RightInspectorProps) {
             />
 
             <label>
-              绾垮附
+              线帽
               <select
                 value={visualLineCap}
                 onChange={(event) =>
@@ -553,7 +610,7 @@ export function RightInspector({ systemFonts }: RightInspectorProps) {
             </label>
 
             <label>
-              绾胯
+              线角
               <select
                 value={visualLineJoin}
                 onChange={(event) =>
@@ -569,7 +626,7 @@ export function RightInspector({ systemFonts }: RightInspectorProps) {
             </label>
 
             <label>
-              铏氱嚎妯″紡
+              虚线模式
               <input
                 key={`${selectedElement.id}-${visualDashArrayText}`}
                 type="text"
@@ -593,7 +650,7 @@ export function RightInspector({ systemFonts }: RightInspectorProps) {
               />
             </label>
             <label>
-              铏氱嚎鍋忕Щ
+              虚线偏移
               <div className="micro-adjust-row">
                 <button type="button" className="tool-ghost" onClick={() => nudgeDashOffset(-VISUAL_FINE_STEP)}>
                   -0.01
@@ -615,7 +672,7 @@ export function RightInspector({ systemFonts }: RightInspectorProps) {
               </div>
             </label>
             <label>
-              灏栬闄愬埗
+              尖角限制
               <div className="micro-adjust-row">
                 <button type="button" className="tool-ghost" onClick={() => nudgeMiterLimit(-VISUAL_FINE_STEP)}>
                   -0.01
@@ -640,7 +697,7 @@ export function RightInspector({ systemFonts }: RightInspectorProps) {
             </label>
 
             <label>
-              濉厖瑙勫垯
+              填充规则
               <select
                 value={visualFillRule}
                 onChange={(event) =>
@@ -657,16 +714,17 @@ export function RightInspector({ systemFonts }: RightInspectorProps) {
           </div>
 
           <p className="muted">
-            鏀寔缁嗗井璋冭妭: 绾垮 {MIN_VISUAL_STROKE_WIDTH}~{MAX_VISUAL_STROKE_WIDTH}锛屾杩?{VISUAL_STROKE_NUDGE_STEP}锛?            閫忔槑搴?{MIN_VISUAL_OPACITY}~{MAX_VISUAL_OPACITY}锛屾杩?0.01銆?          </p>
+            支持细微调节：线宽 {MIN_VISUAL_STROKE_WIDTH}~{MAX_VISUAL_STROKE_WIDTH}，步进 {VISUAL_STROKE_NUDGE_STEP}；透明度 {MIN_VISUAL_OPACITY}~{MAX_VISUAL_OPACITY}，步进 0.01。
+          </p>
         </section>
       ) : null}
 
       {selectedElement.type === "image" ? (
         <section>
-          <h3>鍥剧墖璧勬簮</h3>
+          <h3>图片资源</h3>
           <div className="inline-actions">
             <button type="button" className="tool-ghost" onClick={() => imageInputRef.current?.click()}>
-              閫夋嫨鍥剧墖
+              选择图片
             </button>
             <button
               type="button"
@@ -678,7 +736,7 @@ export function RightInspector({ systemFonts }: RightInspectorProps) {
                 })
               }
             >
-              娓呯┖
+              清空
             </button>
           </div>
           <input
@@ -694,10 +752,10 @@ export function RightInspector({ systemFonts }: RightInspectorProps) {
 
       {selectedElement.type === "barcode" ? (
         <section>
-          <h3>鏉＄爜鍙傛暟</h3>
+          <h3>条码参数</h3>
           <div className="form-grid">
             <label>
-              鐮佸埗
+              码制
               <select
                 value={selectedElement.barcode.symbology}
                 onChange={(event) => onSymbologyChange(event.target.value as BarcodeSymbology)}
@@ -710,33 +768,33 @@ export function RightInspector({ systemFonts }: RightInspectorProps) {
               </select>
             </label>
             <NumericInput
-              label="鏉″(mil)"
+              label="条宽(mil)"
               value={selectedElement.barcode.moduleWidth}
               min={0.1}
               step={0.01}
               onChange={(value) => updateSelectedBarcode({ moduleWidth: value })}
             />
             <NumericInput
-              label="鏂囧瓧闂撮殧"
+              label="文字间隔"
               value={selectedElement.barcode.textGap}
               step={0.1}
               onChange={(value) => updateSelectedBarcode({ textGap: value })}
             />
             <NumericInput
-              label="闈欏尯"
+              label="静区"
               value={selectedElement.barcode.quietZone}
               step={0.1}
               onChange={(value) => updateSelectedBarcode({ quietZone: value })}
             />
             <NumericInput
-              label="鏈€灏忛珮(mm)"
+              label="最小高(mm)"
               value={selectedElement.barcode.minHeight}
               min={3}
               step={0.1}
               onChange={(value) => updateSelectedBarcode({ minHeight: value })}
             />
             <label>
-              鏂囧瓧浣嶇疆
+              文字位置
               <select
                 value={selectedElement.barcode.textPosition}
                 onChange={(event) =>
@@ -746,8 +804,8 @@ export function RightInspector({ systemFonts }: RightInspectorProps) {
                 }
               >
                 <option value="none">不显示</option>
-                <option value="top">涓婃柟</option>
-                <option value="bottom">涓嬫柟</option>
+                <option value="top">上方</option>
+                <option value="bottom">下方</option>
               </select>
             </label>
           </div>

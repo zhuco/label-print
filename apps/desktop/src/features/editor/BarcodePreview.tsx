@@ -45,6 +45,7 @@ export function BarcodePreview({
     svg.setAttribute("preserveAspectRatio", "none");
     if (!supportsCanvasContext()) {
       renderFallback(svg, barcodeValue, showText);
+      fitSvgToContainer(svg);
       return;
     }
 
@@ -58,8 +59,10 @@ export function BarcodePreview({
         width: moduleWidthPx,
         textMargin: 2,
       });
+      fitSvgToContainer(svg);
     } catch {
       renderFallback(svg, barcodeValue, showText);
+      fitSvgToContainer(svg);
     }
   }, [heightMm, mmToPx, moduleWidthMm, quietZoneMm, showText, value, symbology]);
 
@@ -117,4 +120,15 @@ function renderFallback(svg: SVGSVGElement, text: string, showText: boolean) {
     label.textContent = safe;
     svg.appendChild(label);
   }
+}
+
+function fitSvgToContainer(svg: SVGSVGElement) {
+  const width = Number.parseFloat(svg.getAttribute("width") || "");
+  const height = Number.parseFloat(svg.getAttribute("height") || "");
+  if (!svg.hasAttribute("viewBox") && Number.isFinite(width) && Number.isFinite(height)) {
+    svg.setAttribute("viewBox", `0 0 ${width} ${height}`);
+  }
+  svg.setAttribute("width", "100%");
+  svg.setAttribute("height", "100%");
+  svg.setAttribute("preserveAspectRatio", "none");
 }

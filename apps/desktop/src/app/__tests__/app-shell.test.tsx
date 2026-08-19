@@ -1,5 +1,6 @@
 ﻿import { cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { within } from "@testing-library/react";
 import "../../styles/layout.css";
 
 const minimizeWindowMock = vi.fn();
@@ -28,7 +29,7 @@ vi.mock("../../services/ipc/launch-files", () => ({
   subscribeLaunchFiles: (handler: (payloads: unknown[]) => void) => subscribeLaunchFilesMock(handler),
 }));
 
-import App from "../../App";
+import App, { shouldOpenCloudAuthOnStartup } from "../../App";
 import { resetEditorStoreForTests, useEditorStore } from "../../features/editor/editor.store";
 
 const DDL_IMPORT_SAMPLE = `<?xml version="1.0" encoding="UTF-8"?>
@@ -51,6 +52,12 @@ const DDL_IMPORT_SAMPLE = `<?xml version="1.0" encoding="UTF-8"?>
 </DLabel>`;
 
 describe("App shell", () => {
+  it("opens the cloud login at production startup only when no session is restored", () => {
+    expect(shouldOpenCloudAuthOnStartup({ status: "anonymous", user: null }, true)).toBe(true);
+    expect(shouldOpenCloudAuthOnStartup({ status: "loading", user: null }, true)).toBe(false);
+    expect(shouldOpenCloudAuthOnStartup({ status: "anonymous", user: null }, false)).toBe(false);
+  });
+
   const openNewLabelModal = (container: HTMLElement) => {
     const newTabButton = container.querySelector<HTMLButtonElement>(".new-tab");
     expect(newTabButton).not.toBeNull();
@@ -75,6 +82,20 @@ describe("App shell", () => {
     const confirmButton = container.querySelector<HTMLButtonElement>(".new-label-modal .primary");
     expect(confirmButton).not.toBeNull();
     fireEvent.click(confirmButton!);
+  };
+
+  const openLocalFileFromCloud = () => {
+    fireEvent.click(screen.getByTestId("cmd-open"));
+    fireEvent.click(screen.getByRole("button", { name: "从本机打开" }));
+  };
+
+  const exportToLocalFile = () => {
+    fireEvent.click(screen.getByTestId("cmd-save"));
+    const saveDialog = screen.queryByRole("dialog", { name: "保存标签" });
+    if (saveDialog) {
+      fireEvent.click(screen.getByRole("button", { name: /本地保存/ }));
+      fireEvent.click(within(saveDialog).getByRole("button", { name: "保存" }));
+    }
   };
 
   afterEach(() => {
@@ -391,7 +412,7 @@ describe("App shell", () => {
     expect(container.querySelector(".win-icon-maximize")).not.toBeNull();
   });
 
-  it("uses file picker when clicking open command button", async () => {
+  it("asks for an opening source and opens the local picker only after choosing local", async () => {
     const { container } = render(<App />);
     enterEditorMode(container);
     const fileInput = container.querySelector<HTMLInputElement>('input[type="file"]');
@@ -399,6 +420,9 @@ describe("App shell", () => {
 
     const clickSpy = vi.spyOn(fileInput!, "click");
     fireEvent.click(screen.getByTestId("cmd-open"));
+    expect(screen.getByRole("dialog", { name: "打开标签" })).toBeInTheDocument();
+    expect(clickSpy).not.toHaveBeenCalled();
+    fireEvent.click(screen.getByRole("button", { name: "从本机打开" }));
     await waitFor(() => {
       expect(clickSpy).toHaveBeenCalledTimes(1);
     });
@@ -417,7 +441,7 @@ describe("App shell", () => {
     const menuItems = Array.from(container.querySelectorAll<HTMLButtonElement>(".file-menu-item")).map((button) =>
       (button.textContent || "").trim()
     );
-    expect(menuItems).toEqual(["新建", "打开", "导入", "保存", "另存为", "打印"]);
+    expect(menuItems).toEqual(["新建", "打开", "导入", "保存", "另存为...", "打印"]);
 
     const importButton = screen.getByRole("button", { name: "导入" });
     fireEvent.click(importButton);
@@ -425,6 +449,23 @@ describe("App shell", () => {
     await waitFor(() => {
       expect(clickSpy).toHaveBeenCalledTimes(1);
     });
+  });
+
+  it("keeps editor side panels visible by default and remembers an explicit hide", () => {
+    const firstRender = render(<App />);
+    enterEditorMode(firstRender.container);
+
+    expect(screen.getByRole("heading", { name: "元素" })).toBeInTheDocument();
+    expect(screen.getByRole("heading", { name: "属性" })).toBeInTheDocument();
+    fireEvent.click(screen.getByRole("button", { name: "隐藏元素面板" }));
+    expect(localStorage.getItem("label-print.editor.left-panel-visible")).toBe("false");
+    expect(firstRender.container.querySelector(".panel.left")).toHaveClass("panel-hidden");
+
+    firstRender.unmount();
+    const secondRender = render(<App />);
+    enterEditorMode(secondRender.container);
+    expect(secondRender.container.querySelector(".panel.left")).toHaveClass("panel-hidden");
+    expect(screen.getByRole("button", { name: "显示元素面板" })).toBeInTheDocument();
   });
 
   it("opens template through tauri dialog and then saves back to original path", async () => {
@@ -465,13 +506,13 @@ describe("App shell", () => {
     const { container } = render(<App />);
     enterEditorMode(container);
 
-    fireEvent.click(screen.getByTestId("cmd-open"));
+    openLocalFileFromCloud();
 
     await waitFor(() => {
       expect(container.querySelector(".command-status")?.textContent).toContain("已打开模板文件：from-dialog.json");
     });
 
-    fireEvent.click(screen.getByTestId("cmd-save"));
+    exportToLocalFile();
 
     await waitFor(() => {
       expect(invokeMock).toHaveBeenCalledWith(
@@ -525,12 +566,12 @@ describe("App shell", () => {
     const { container } = render(<App />);
     enterEditorMode(container);
 
-    fireEvent.click(screen.getByTestId("cmd-open"));
+    openLocalFileFromCloud();
     await waitFor(() => {
       expect(container.querySelector(".command-status")?.textContent).toContain("from-device.ddl");
     });
 
-    fireEvent.click(screen.getByTestId("cmd-save"));
+    exportToLocalFile();
     await waitFor(() => {
       expect(showSaveFilePickerMock).toHaveBeenCalledTimes(1);
       expect(createWritableMock).toHaveBeenCalledTimes(1);
@@ -538,7 +579,7 @@ describe("App shell", () => {
     expect(invokeMock.mock.calls.some(([command]) => command === "save_template_file")).toBe(false);
   });
 
-  it("opens save dialog when clicking save command button", async () => {
+  it("opens save dialog when exporting to the local computer", async () => {
     const writeMock = vi.fn().mockResolvedValue(undefined);
     const closeMock = vi.fn().mockResolvedValue(undefined);
     const createWritableMock = vi.fn().mockResolvedValue({
@@ -551,7 +592,7 @@ describe("App shell", () => {
 
     const { container } = render(<App />);
     enterEditorMode(container);
-    fireEvent.click(screen.getByTestId("cmd-save"));
+    exportToLocalFile();
 
     await waitFor(() => expect(showSaveFilePickerMock).toHaveBeenCalledTimes(1));
     expect(createWritableMock).toHaveBeenCalledTimes(1);
@@ -559,7 +600,62 @@ describe("App shell", () => {
     expect(closeMock).toHaveBeenCalledTimes(1);
   });
 
-  it("blocks save when picked file name already exists in recent history", async () => {
+  it("collects a label name, saves to the native selected path, and reports overwrite handling", async () => {
+    const invokeMock = vi.fn(async (command: string) => {
+      if (command === "list_system_fonts" || command === "custom_presets_list") {
+        return [];
+      }
+      if (command === "pick_template_save_path") {
+        return {
+          fileName: "货架标签.lpt",
+          filePath: "D:/labels/货架标签.lpt",
+          replacingExisting: true,
+        };
+      }
+      if (command === "save_template_file") {
+        return { fileName: "货架标签.lpt" };
+      }
+      return [];
+    });
+    Object.defineProperty(window, "__TAURI__", {
+      configurable: true,
+      writable: true,
+      value: { core: { invoke: invokeMock } },
+    });
+
+    const { container } = render(<App />);
+    enterEditorMode(container);
+    fireEvent.click(screen.getByTestId("cmd-save"));
+    fireEvent.click(screen.getByRole("button", { name: /本地保存/ }));
+
+    const nameInput = screen.getByRole("textbox", { name: "标签名称" });
+    fireEvent.change(nameInput, { target: { value: "货架标签" } });
+    fireEvent.keyDown(nameInput, { key: "Enter" });
+
+    await waitFor(() => {
+      expect(invokeMock).toHaveBeenCalledWith("pick_template_save_path", {
+        payload: { suggestedName: "货架标签.lpt" },
+      });
+      expect(invokeMock).toHaveBeenCalledWith(
+        "save_template_file",
+        expect.objectContaining({
+          payload: expect.objectContaining({ path: "D:/labels/货架标签.lpt" }),
+        })
+      );
+      expect(container.querySelector(".command-status")?.textContent).toContain("已确认覆盖同名文件");
+    });
+
+    useEditorStore.getState().addTextElement();
+    fireEvent.click(screen.getByTestId("cmd-save"));
+
+    await waitFor(() => {
+      expect(invokeMock.mock.calls.filter(([command]) => command === "pick_template_save_path")).toHaveLength(1);
+      expect(invokeMock.mock.calls.filter(([command]) => command === "save_template_file")).toHaveLength(2);
+      expect(screen.queryByRole("dialog", { name: "保存标签" })).not.toBeInTheDocument();
+    });
+  });
+
+  it("allows the same file name in a different location", async () => {
     localStorage.setItem(
       "label-print.recent-opened",
       JSON.stringify([
@@ -594,13 +690,13 @@ describe("App shell", () => {
 
     const { container } = render(<App />);
     enterEditorMode(container);
-    fireEvent.click(screen.getByTestId("cmd-save"));
+    exportToLocalFile();
 
     await waitFor(() => expect(showSaveFilePickerMock).toHaveBeenCalledTimes(1));
-    expect(createWritableMock).toHaveBeenCalledTimes(0);
-    expect(writeMock).toHaveBeenCalledTimes(0);
-    expect(closeMock).toHaveBeenCalledTimes(0);
-    expect(container.querySelector(".command-status")?.textContent).toContain("已存在于历史记录");
+    expect(createWritableMock).toHaveBeenCalledTimes(1);
+    expect(writeMock).toHaveBeenCalledTimes(1);
+    expect(closeMock).toHaveBeenCalledTimes(1);
+    expect(container.querySelector(".command-status")?.textContent).toContain("已保存到文件");
   });
 
   it("saves launch-opened template back to original path without save dialog", async () => {
@@ -637,7 +733,7 @@ describe("App shell", () => {
       expect(container.querySelector(".command-status")?.textContent).toContain("已打开模板文件：开机模板.json");
     });
 
-    fireEvent.click(screen.getByTestId("cmd-save"));
+    exportToLocalFile();
 
     await waitFor(() => {
       expect(invokeMock).toHaveBeenCalledWith(
@@ -652,26 +748,65 @@ describe("App shell", () => {
     expect(showSaveFilePickerMock).toHaveBeenCalledTimes(0);
   });
 
-  it("supports Ctrl+S to save current template", async () => {
-    const createWritableMock = vi.fn().mockResolvedValue({
-      write: vi.fn().mockResolvedValue(undefined),
-      close: vi.fn().mockResolvedValue(undefined),
-    });
-    showSaveFilePickerMock.mockResolvedValue({
-      createWritable: createWritableMock,
-    });
+  it("uses Ctrl+S to open the unified save dialog with cloud selected", () => {
+    const { container } = render(<App />);
+    fireEvent.keyDown(window, { key: "s", ctrlKey: true });
+    expect(screen.getByRole("dialog", { name: "保存标签" })).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: /云端标签/ })).toHaveClass("active");
+    expect(screen.getByRole("button", { name: /本地保存/ })).not.toHaveClass("active");
+    expect(container.querySelector(".cloud-auth-modal")).toBeNull();
+  });
 
+  it("uses Escape to cancel the save dialog without closing the application", () => {
     render(<App />);
     fireEvent.keyDown(window, { key: "s", ctrlKey: true });
+    expect(screen.getByRole("dialog", { name: "保存标签" })).toBeInTheDocument();
 
-    await waitFor(() => expect(showSaveFilePickerMock).toHaveBeenCalledTimes(1));
-    expect(createWritableMock).toHaveBeenCalledTimes(1);
+    fireEvent.keyDown(window, { key: "Escape" });
+
+    expect(screen.queryByRole("dialog", { name: "保存标签" })).not.toBeInTheDocument();
+    expect(closeWindowMock).not.toHaveBeenCalled();
+  });
+
+  it("uses Escape on the main UI to run the same close flow as the titlebar close button", () => {
+    render(<App />);
+
+    fireEvent.keyDown(window, { key: "Escape" });
+
+    expect(closeWindowMock).toHaveBeenCalledTimes(1);
+  });
+
+  it("shows the unsaved warning when Escape closes the main UI", () => {
+    const { container } = render(<App />);
+    enterEditorMode(container);
+    useEditorStore.getState().addTextElement();
+
+    fireEvent.keyDown(window, { key: "Escape" });
+
+    expect(screen.getByRole("dialog", { name: "关闭程序确认" })).toBeInTheDocument();
+    expect(closeWindowMock).not.toHaveBeenCalled();
   });
 
   it("supports Ctrl+N to open new label modal", () => {
     const { container } = render(<App />);
     fireEvent.keyDown(window, { key: "n", ctrlKey: true });
     expect(container.querySelector(".new-label-modal")).not.toBeNull();
+  });
+
+  it("supports Ctrl+C, Ctrl+X, and Ctrl+V for canvas elements", () => {
+    const { container } = render(<App />);
+    enterEditorMode(container);
+    useEditorStore.getState().addTextElement();
+
+    fireEvent.keyDown(window, { key: "c", ctrlKey: true });
+    fireEvent.keyDown(window, { key: "v", ctrlKey: true });
+    expect(useEditorStore.getState().documents.find((item) => item.id === useEditorStore.getState().activeDocumentId)?.elements).toHaveLength(2);
+
+    fireEvent.keyDown(window, { key: "x", ctrlKey: true });
+    expect(useEditorStore.getState().documents.find((item) => item.id === useEditorStore.getState().activeDocumentId)?.elements).toHaveLength(1);
+
+    fireEvent.keyDown(window, { key: "v", ctrlKey: true });
+    expect(useEditorStore.getState().documents.find((item) => item.id === useEditorStore.getState().activeDocumentId)?.elements).toHaveLength(2);
   });
 
   it("supports Ctrl+P to open print modal in editor", () => {
@@ -837,6 +972,10 @@ describe("App shell", () => {
     expect(saveAndCloseButton).not.toBeNull();
     fireEvent.click(saveAndCloseButton!);
 
+    const saveDialog = await screen.findByRole("dialog", { name: "保存标签" });
+    fireEvent.click(within(saveDialog).getByRole("button", { name: /本地保存/ }));
+    fireEvent.click(within(saveDialog).getByRole("button", { name: "保存" }));
+
     await waitFor(() => {
       expect(showSaveFilePickerMock).toHaveBeenCalledTimes(1);
       expect(createWritableMock).toHaveBeenCalledTimes(1);
@@ -933,11 +1072,11 @@ describe("App shell", () => {
     const { container } = render(<App />);
     enterEditorMode(container);
 
-    fireEvent.click(screen.getByTestId("cmd-save"));
+    exportToLocalFile();
     await waitFor(() => expect(showSaveFilePickerMock).toHaveBeenCalledTimes(1));
     await waitFor(() => expect(createWritableMock).toHaveBeenCalledTimes(1));
 
-    fireEvent.click(screen.getByTestId("cmd-save"));
+    exportToLocalFile();
     await waitFor(() => expect(createWritableMock).toHaveBeenCalledTimes(2));
     expect(showSaveFilePickerMock).toHaveBeenCalledTimes(1);
 
@@ -960,11 +1099,11 @@ describe("App shell", () => {
     fireEvent.click(homeButton!);
 
     await waitFor(() => {
-      expect(container.querySelectorAll(".home-recent-card")).toHaveLength(0);
+      expect(container.querySelectorAll(".home-label-item")).toHaveLength(0);
     });
   });
 
-  it("records saved recent item by saved name and renders drawable thumbnail", async () => {
+  it("records saved recent item by its saved name and shows explicit actions", async () => {
     const writeMock = vi.fn().mockResolvedValue(undefined);
     const closeMock = vi.fn().mockResolvedValue(undefined);
     const createWritableMock = vi.fn().mockResolvedValue({
@@ -982,7 +1121,7 @@ describe("App shell", () => {
     expect(toolButtons.length).toBeGreaterThan(0);
     fireEvent.click(toolButtons[0]);
 
-    fireEvent.click(screen.getByTestId("cmd-save"));
+    exportToLocalFile();
     await waitFor(() => expect(createWritableMock).toHaveBeenCalledTimes(1));
 
     const homeButton = container.querySelector<HTMLButtonElement>(".brand-home");
@@ -990,13 +1129,13 @@ describe("App shell", () => {
     fireEvent.click(homeButton!);
 
     await waitFor(() => {
-      expect(container.querySelector(".home-recent-meta > h4")?.textContent).toBe("\u8d27\u67b6\u6807\u7b7e");
+      expect(container.querySelector(".home-label-item-name > strong")?.textContent).toBe("\u8d27\u67b6\u6807\u7b7e");
     });
     expect(container.querySelector(".home-recent-thumbnail")).not.toBeNull();
-    expect(container.querySelectorAll(".home-thumb-element").length).toBeGreaterThan(0);
+    expect(container.querySelectorAll(".home-label-action")).toHaveLength(3);
   });
 
-  it("supports recent search by usage date and allows clear/search actions", async () => {
+  it("supports recent search by label name and allows clear/search actions", async () => {
     localStorage.setItem(
       "label-print.recent-opened",
       JSON.stringify([
@@ -1033,12 +1172,12 @@ describe("App shell", () => {
 
     const { container } = render(<App />);
     await waitFor(() => {
-      expect(container.querySelectorAll(".home-recent-card")).toHaveLength(2);
+      expect(container.querySelectorAll(".home-label-item")).toHaveLength(2);
     });
 
     const searchInput = container.querySelector<HTMLInputElement>(".home-search input");
     expect(searchInput).not.toBeNull();
-    fireEvent.change(searchInput!, { target: { value: "2026-04-05" } });
+    fireEvent.change(searchInput!, { target: { value: "四月" } });
 
     const clearButton = container.querySelector<HTMLButtonElement>(".home-search-clear");
     const searchButton = container.querySelector<HTMLButtonElement>(".home-search-submit");
@@ -1047,17 +1186,51 @@ describe("App shell", () => {
 
     fireEvent.click(searchButton!);
     await waitFor(() => {
-      expect(container.querySelectorAll(".home-recent-card")).toHaveLength(1);
-      expect(container.querySelector(".home-recent-meta > h4")?.textContent).toBe("四月标签");
+      expect(container.querySelectorAll(".home-label-item")).toHaveLength(1);
+      expect(container.querySelector(".home-label-item-name > strong")?.textContent).toBe("四月标签");
     });
 
     fireEvent.click(clearButton!);
     await waitFor(() => {
-      expect(container.querySelectorAll(".home-recent-card")).toHaveLength(2);
+      expect(container.querySelectorAll(".home-label-item")).toHaveLength(2);
     });
   });
 
-  it("supports deleting a recent item via right-click menu", async () => {
+  it("opens the print dialog from a recent label without entering the editor", async () => {
+    localStorage.setItem(
+      "label-print.recent-opened",
+      JSON.stringify([
+        {
+          id: "recent-print",
+          fileName: "直接打印标签.lpt",
+          saved: true,
+          openedAt: Date.UTC(2026, 3, 5, 10, 20, 0),
+          snapshot: {
+            title: "不应显示的内部标题",
+            labelSize: { widthMm: 40, heightMm: 30 },
+            elements: [],
+            calibration: { offsetX: 0, offsetY: 0, scale: 1 },
+            printerId: "Zebra-01",
+            copies: 1,
+          },
+        },
+      ])
+    );
+
+    const { container } = render(<App />);
+    await waitFor(() => {
+      expect(container.querySelectorAll(".home-label-item")).toHaveLength(1);
+    });
+
+    fireEvent.click(screen.getByRole("button", { name: "打印" }));
+
+    expect(container.querySelector(".print-modal")).not.toBeNull();
+    expect(container.querySelector(".app-shell")).toHaveClass("home-mode");
+    expect(container.querySelector(".doc-tab")).toBeNull();
+    expect(screen.getByText("模板：直接打印标签 · 尺寸：40 × 30 mm")).toBeInTheDocument();
+  });
+
+  it("requires confirmation before removing a recent item", async () => {
     localStorage.setItem(
       "label-print.recent-opened",
       JSON.stringify([
@@ -1081,23 +1254,18 @@ describe("App shell", () => {
 
     const { container } = render(<App />);
     await waitFor(() => {
-      expect(container.querySelectorAll(".home-recent-card")).toHaveLength(1);
+      expect(container.querySelectorAll(".home-label-item")).toHaveLength(1);
     });
 
-    const card = container.querySelector<HTMLButtonElement>(".home-recent-card");
-    expect(card).not.toBeNull();
-    fireEvent.contextMenu(card!, { clientX: 120, clientY: 96 });
-
-    const deleteButton = container.querySelector<HTMLButtonElement>(".home-recent-context-delete");
-    expect(deleteButton).not.toBeNull();
-    fireEvent.mouseDown(deleteButton!);
-    fireEvent.click(deleteButton!);
+    fireEvent.click(screen.getByRole("button", { name: "删除" }));
+    expect(screen.getByText("确认从最近使用中移除“可删除标签.lpt”吗？")).toBeInTheDocument();
+    expect(screen.getByText("只会移除最近记录，不会删除电脑中的标签文件。")).toBeInTheDocument();
+    fireEvent.click(screen.getByRole("button", { name: "确认删除" }));
 
     await waitFor(() => {
-      expect(container.querySelectorAll(".home-recent-card")).toHaveLength(0);
+      expect(container.querySelectorAll(".home-label-item")).toHaveLength(0);
     });
-    const stored = JSON.parse(localStorage.getItem("label-print.recent-opened") || "[]") as unknown[];
-    expect(stored).toHaveLength(0);
+    expect(localStorage.getItem("label-print.recent-opened")).toBeNull();
   });
 
   it("saves .lpt opened from recent items back to remembered file path", async () => {
@@ -1143,11 +1311,11 @@ describe("App shell", () => {
 
     const { container } = render(<App />);
     await waitFor(() => {
-      expect(container.querySelectorAll(".home-recent-card")).toHaveLength(1);
+      expect(container.querySelectorAll(".home-label-item")).toHaveLength(1);
     });
 
-    fireEvent.click(container.querySelector<HTMLButtonElement>(".home-recent-card")!);
-    fireEvent.click(screen.getByTestId("cmd-save"));
+    fireEvent.click(screen.getByRole("button", { name: "编辑" }));
+    exportToLocalFile();
 
     await waitFor(() => {
       expect(invokeMock).toHaveBeenCalledWith(

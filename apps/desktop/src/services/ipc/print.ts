@@ -19,7 +19,7 @@ export type DirectPrintPayload = {
   copies: number;
   calibrationJson: string;
   payloadJson: string;
-  previewPngBase64: string;
+  previewPngBase64s: string[];
   widthMm: number;
   heightMm: number;
   title: string;
@@ -52,6 +52,7 @@ function normalizePrinterNames(input: unknown): string[] {
   }
   return Array.from(deduped);
 }
+
 
 function writeCachedSystemPrinters(printers: string[]) {
   if (typeof localStorage === "undefined") {
@@ -146,7 +147,7 @@ export async function submitDirectPrint(payload: DirectPrintPayload): Promise<Di
         copies: payload.copies,
         calibration_json: payload.calibrationJson,
         payload_json: payload.payloadJson,
-        preview_png_base64: payload.previewPngBase64,
+        preview_png_base64s: payload.previewPngBase64s,
         width_mm: payload.widthMm,
         height_mm: payload.heightMm,
         title: payload.title,
@@ -155,6 +156,17 @@ export async function submitDirectPrint(payload: DirectPrintPayload): Promise<Di
   } catch (error) {
     if (isTauriUnavailable(error)) {
       return { jobId: Date.now(), outputPath: null };
+    }
+    throw error;
+  }
+}
+
+export async function revealPdfOutput(path: string): Promise<void> {
+  try {
+    await invoke("reveal_pdf_output", { path });
+  } catch (error) {
+    if (isTauriUnavailable(error)) {
+      return;
     }
     throw error;
   }

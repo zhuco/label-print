@@ -1,10 +1,11 @@
-import { useMemo, useState, type ReactNode } from "react";
+import { useEffect, useMemo, useState, type ReactNode } from "react";
 
 import { INDUSTRY_TEMPLATES, type IndustryTemplate } from "./core/industry-templates";
 import { ICON_PRESETS, PresetGlyph, SHAPE_PRESETS, type VisualPresetKind } from "./core/visual-presets";
 
 type LeftPaletteProps = {
   onAddText: () => void;
+  onAddDateTime: () => void;
   onAddBarcode: () => void;
   onAddImage: () => void;
   onRecognizeImage: () => void;
@@ -13,6 +14,9 @@ type LeftPaletteProps = {
   onAddIcon: (presetId: string) => void;
   onApplyIndustryTemplate: (templateId: string) => void;
   onApplyCustomPreset: (presetId: string) => void;
+  onUpdateCustomPresetMeta?: (presetId: string, patch: { name: string; category: string }) => boolean;
+  onDuplicateCustomPreset?: (presetId: string) => boolean;
+  onDeleteCustomPreset?: (presetId: string) => boolean;
   customPresets: Array<{
     id: string;
     name: string;
@@ -42,6 +46,7 @@ type PickerOption = {
 
 export function LeftPalette({
   onAddText,
+  onAddDateTime,
   onAddBarcode,
   onAddImage,
   onRecognizeImage,
@@ -50,11 +55,17 @@ export function LeftPalette({
   onAddIcon,
   onApplyIndustryTemplate,
   onApplyCustomPreset,
+  onUpdateCustomPresetMeta = () => false,
+  onDuplicateCustomPreset = () => false,
+  onDeleteCustomPreset = () => false,
   customPresets,
 }: LeftPaletteProps) {
   const [pickerKind, setPickerKind] = useState<PickerKind | null>(null);
   const [searchKeyword, setSearchKeyword] = useState("");
   const [activeCategory, setActiveCategory] = useState("全部");
+  const [managedPresetId, setManagedPresetId] = useState<string | null>(null);
+  const [managedPresetName, setManagedPresetName] = useState("");
+  const [managedPresetCategory, setManagedPresetCategory] = useState("");
 
   const pickerOptions = useMemo<PickerOption[]>(() => {
     if (!pickerKind) {
@@ -112,6 +123,27 @@ export function LeftPalette({
     setPickerKind(null);
   };
 
+  const managedPreset = customPresets.find((preset) => preset.id === managedPresetId) ?? null;
+  const openCustomPresetManager = (preset: LeftPaletteProps["customPresets"][number]) => {
+    setManagedPresetId(preset.id);
+    setManagedPresetName(preset.name);
+    setManagedPresetCategory(preset.category);
+  };
+  const closeCustomPresetManager = () => setManagedPresetId(null);
+  const saveCustomPresetMeta = () => {
+    if (!managedPreset) return;
+    if (onUpdateCustomPresetMeta(managedPreset.id, { name: managedPresetName, category: managedPresetCategory })) {
+      closeCustomPresetManager();
+    }
+  };
+  const deleteManagedCustomPreset = () => {
+    if (!managedPreset) return;
+    if (typeof window !== "undefined" && !window.confirm(`确定删除“${managedPreset.name}”吗？`)) return;
+    if (onDeleteCustomPreset(managedPreset.id)) {
+      closeCustomPresetManager();
+    }
+  };
+
   const choosePreset = (option: PickerOption) => {
     if (option.kind === "shape") {
       onAddShape(option.id);
@@ -125,8 +157,33 @@ export function LeftPalette({
     closePresetPicker();
   };
 
+  useEffect(() => {
+    if (!pickerKind && !managedPreset) return;
+    const onKeyDown = (event: KeyboardEvent) => {
+      if (event.defaultPrevented || event.isComposing || event.repeat) return;
+      if (event.key === "Escape") {
+        event.preventDefault();
+        if (managedPreset) closeCustomPresetManager();
+        else closePresetPicker();
+        return;
+      }
+      if (event.key !== "Enter" || (event.target as HTMLElement | null)?.closest("button, select, textarea")) {
+        return;
+      }
+      event.preventDefault();
+      if (managedPreset) {
+        saveCustomPresetMeta();
+      } else if (visibleOptions[0]) {
+        choosePreset(visibleOptions[0]);
+      }
+    };
+    window.addEventListener("keydown", onKeyDown);
+    return () => window.removeEventListener("keydown", onKeyDown);
+  }, [managedPreset, managedPresetCategory, managedPresetName, pickerKind, visibleOptions]);
+
   const items: ToolItem[] = [
     { id: "text", label: "文本", onClick: onAddText, icon: <IconText /> },
+    { id: "datetime", label: "日期时间", onClick: onAddDateTime, icon: <IconDateTime /> },
     { id: "barcode", label: "条码", onClick: onAddBarcode, icon: <IconBarcode /> },
     { id: "image", label: "图片", onClick: onAddImage, icon: <IconImage /> },
     { id: "image-recognition", label: "图片识别", onClick: onRecognizeImage, icon: <IconScanImage /> },
@@ -190,8 +247,8 @@ export function LeftPalette({
 
             <div className="preset-picker-grid">
               {visibleOptions.map((option) => (
+                <div key={option.id} className="preset-card-wrap">
                 <button
-                  key={option.id}
                   type="button"
                   className="preset-card"
                   onClick={() => choosePreset(option)}
@@ -218,8 +275,43 @@ export function LeftPalette({
                   <span className="preset-card-meta">{option.category}</span>
                   {option.description ? <span className="preset-card-desc">{option.description}</span> : null}
                 </button>
+                {option.kind === "custom" ? (
+                  <button
+                    type="button"
+                    className="tool-ghost preset-card-manage"
+                    aria-label={`管理${option.label}`}
+                    onClick={() => {
+                      const preset = customPresets.find((item) => item.id === option.id);
+                      if (preset) openCustomPresetManager(preset);
+                    }}
+                  >
+                    管理
+                  </button>
+                ) : null}
+                </div>
               ))}
               {visibleOptions.length === 0 ? <p className="muted">没有匹配的预设。</p> : null}
+            </div>
+          </section>
+        </div>
+      ) : null}
+
+      {managedPreset ? (
+        <div className="modal-mask" onClick={closeCustomPresetManager}>
+          <section className="modal-card" onClick={(event) => event.stopPropagation()}>
+            <header className="modal-header">
+              <h3>管理自定义图形</h3>
+              <button type="button" onClick={closeCustomPresetManager} aria-label="关闭管理弹窗">×</button>
+            </header>
+            <div className="form-grid">
+              <label>名称<input value={managedPresetName} onChange={(event) => setManagedPresetName(event.target.value)} /></label>
+              <label>分类<input value={managedPresetCategory} onChange={(event) => setManagedPresetCategory(event.target.value)} /></label>
+            </div>
+            <div className="inline-actions">
+              <button type="button" className="tool-ghost" onClick={() => onDuplicateCustomPreset(managedPreset.id)}>复制</button>
+              <button type="button" className="tool-ghost danger" onClick={deleteManagedCustomPreset}>删除</button>
+              <button type="button" className="tool-ghost" onClick={closeCustomPresetManager}>取消</button>
+              <button type="button" className="primary" onClick={saveCustomPresetMeta}>保存</button>
             </div>
           </section>
         </div>
@@ -240,6 +332,16 @@ function IconText() {
   return (
     <IconShell>
       <path d="M4 6h16M8 6v12M16 6v12M6 18h12" fill="none" stroke="currentColor" strokeWidth="1.8" />
+    </IconShell>
+  );
+}
+
+function IconDateTime() {
+  return (
+    <IconShell>
+      <rect x="4" y="5.5" width="16" height="14" rx="2" fill="none" stroke="currentColor" strokeWidth="1.8" />
+      <path d="M7.5 3.8v3.5M16.5 3.8v3.5M4 9.5h16" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" />
+      <path d="M12 12v3l2 1.2" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round" />
     </IconShell>
   );
 }

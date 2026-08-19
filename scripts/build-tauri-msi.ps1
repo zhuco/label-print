@@ -1,5 +1,15 @@
 ﻿Param(
+    [ValidatePattern('^https://')]
+    [string]$CloudApiBaseUrl = 'https://api1.hengceyun.com',
+    [Parameter(Mandatory = $true)]
+    [string]$UpdaterPublicKey,
+    [ValidateSet('stable', 'beta')]
+    [string]$UpdateChannel = 'stable',
+    [string]$CertificateThumbprint,
+    [ValidatePattern('^https://')]
+    [string]$TimestampUrl,
     [switch]$SkipPnpmBuild,
+    [switch]$ReuseExistingWxs,
     [switch]$NoPause
 )
 
@@ -22,6 +32,27 @@ function Invoke-External {
         $argText = if ($Arguments.Count -gt 0) { " $($Arguments -join ' ')" } else { "" }
         throw "命令执行失败(ExitCode=$LASTEXITCODE): $FilePath$argText"
     }
+}
+
+function Get-HttpsOrigin {
+    Param(
+        [Parameter(Mandatory = $true)]
+        [string]$Value,
+        [Parameter(Mandatory = $true)]
+        [string]$Name
+    )
+
+    try {
+        $uri = [uri]$Value.Trim()
+    } catch {
+        throw "$Name must be an absolute HTTPS origin."
+    }
+    if (-not $uri.IsAbsoluteUri -or $uri.Scheme -ne 'https' -or
+        [string]::IsNullOrWhiteSpace($uri.Host) -or $uri.UserInfo -or
+        $uri.AbsolutePath -ne '/' -or $uri.Query -or $uri.Fragment) {
+        throw "$Name must be a credential-free HTTPS origin without a path, query, or fragment."
+    }
+    return $uri.GetLeftPart([System.UriPartial]::Authority)
 }
 
 function Update-WixLocaleForZhCn {
@@ -262,8 +293,35 @@ $tauriConfigPath = Join-Path $desktop "src-tauri\tauri.conf.json"
 $tauriTools = Join-Path $env:LOCALAPPDATA "tauri\WixTools314"
 $wixDir = Join-Path $desktop "src-tauri\target\release\wix\x64"
 $releaseDir = Join-Path $root "release"
+$temporaryConfig = Join-Path $env:TEMP ("label-print-installer-" + [guid]::NewGuid().ToString("N") + ".json")
+$previousCloudApiUrl = [Environment]::GetEnvironmentVariable("VITE_LABEL_API_URL", "Process")
 
 try {
+    if ($UpdaterPublicKey -match 'REPLACE_WITH|^\s*$') {
+        throw "UpdaterPublicKey must be the content of the Tauri updater public key."
+    }
+    $cloudApiOrigin = Get-HttpsOrigin -Value $CloudApiBaseUrl -Name 'CloudApiBaseUrl'
+    $normalizedCertificateThumbprint = ($CertificateThumbprint -replace '\s', '').ToUpperInvariant()
+    if ($normalizedCertificateThumbprint -and $normalizedCertificateThumbprint -notmatch '^[A-F0-9]{40}$') {
+        throw 'CertificateThumbprint must be a SHA-1 certificate thumbprint (40 hexadecimal characters).'
+    }
+    if ($normalizedCertificateThumbprint -and [string]::IsNullOrWhiteSpace($TimestampUrl)) {
+        throw 'TimestampUrl is required when CertificateThumbprint is supplied.'
+    }
+    $channelSuffix = if ($UpdateChannel -eq 'beta') { '?channel=beta' } else { '' }
+    $updateEndpoint = "$cloudApiOrigin/api/v1/desktop-updates/{{target}}/{{arch}}/{{current_version}}$channelSuffix"
+    $updaterConfig = @{
+        plugins = @{
+            updater = @{
+                pubkey = $UpdaterPublicKey
+                endpoints = @($updateEndpoint)
+                windows = @{ installMode = 'passive' }
+            }
+        }
+    } | ConvertTo-Json -Depth 8
+    Set-Content -LiteralPath $temporaryConfig -Value $updaterConfig -Encoding UTF8 -NoNewline
+    $env:VITE_LABEL_API_URL = $cloudApiOrigin
+
     if (-not (Get-Command node -ErrorAction SilentlyContinue)) {
         $pnpmCommand = Get-Command pnpm -ErrorAction SilentlyContinue
         if ($null -eq $pnpmCommand) {
@@ -289,13 +347,16 @@ try {
         $tauriBuildExitCode = 0
         Push-Location $desktop
         try {
-            node node_modules/@tauri-apps/cli/tauri.js build --bundles msi --no-sign
+            node node_modules/@tauri-apps/cli/tauri.js build --bundles msi --no-sign --config $temporaryConfig
             $tauriBuildExitCode = $LASTEXITCODE
         } finally {
             Pop-Location
         }
         if ($tauriBuildExitCode -ne 0) {
-            Write-Warning "tauri build --bundles msi 退出码=$tauriBuildExitCode，继续使用已生成的 WXS 进行修正和重打包。"
+            if (-not $ReuseExistingWxs) {
+                throw "tauri build --bundles msi failed (exit code $tauriBuildExitCode). Refusing to package a stale WXS; pass -ReuseExistingWxs only after inspecting the existing template."
+            }
+            Write-Warning "tauri build --bundles msi 退出码=$tauriBuildExitCode；按显式参数继续使用已检查的 WXS 模板。"
         }
     }
 
@@ -374,6 +435,15 @@ try {
         Remove-Item -LiteralPath $outWixPdb -Force
     }
     Write-Host "Win11 MSI 已生成：$outMsi"
+    if ($normalizedCertificateThumbprint) {
+        $signScript = Join-Path $scriptDir 'sign-windows-artifact.ps1'
+        & $signScript -Path $outMsi -CertificateThumbprint $normalizedCertificateThumbprint -TimestampUrl $TimestampUrl
+        if ($LASTEXITCODE -ne 0) {
+            throw "Windows Authenticode signing failed (exit code $LASTEXITCODE)."
+        }
+    } else {
+        Write-Warning '未提供 Windows 签名证书；此 MSI 未签名，仅适用于内部测试。'
+    }
     Write-Host "如安装异常，可执行：msiexec /i `"$outMsi`" /L*V `"$env:TEMP\label-desktop-install.log`""
     $global:LASTEXITCODE = 0
 } catch {
@@ -382,6 +452,14 @@ try {
     $_ | Format-List -Force
     exit 1
 } finally {
+    if ($null -eq $previousCloudApiUrl) {
+        Remove-Item Env:VITE_LABEL_API_URL -ErrorAction SilentlyContinue
+    } else {
+        $env:VITE_LABEL_API_URL = $previousCloudApiUrl
+    }
+    if (Test-Path -LiteralPath $temporaryConfig) {
+        Remove-Item -LiteralPath $temporaryConfig -Force
+    }
     if (-not $NoPause) {
         WaitForKey
     }

@@ -26,6 +26,19 @@ const TEXT_FILE_EXTENSIONS = new Set([
 const EXACT_TEXT_FILES = new Set([".editorconfig", ".gitattributes", ".gitignore", "README.md"]);
 
 const SUSPICIOUS_MOJIBAKE_TOKENS = [
+  // Common UTF-8 text accidentally decoded as GBK and saved again as UTF-8.
+  { token: "褰撳墠瀵硅薄", suggestion: "当前对象" },
+  { token: "鍩虹鍙傛暟", suggestion: "基础参数" },
+  { token: "姘村钩", suggestion: "水平" },
+  { token: "鍨傜洿", suggestion: "垂直" },
+  { token: "鍐呭缁戝畾", suggestion: "内容绑定" },
+  { token: "鏂囨湰鍙傛暟", suggestion: "文本参数" },
+  { token: "瀛椾綋", suggestion: "字体" },
+  { token: "瀛楀彿", suggestion: "字号" },
+  { token: "鎻忚竟", suggestion: "描边" },
+  { token: "濉厖", suggestion: "填充" },
+  { token: "閫忔槑搴", suggestion: "透明度" },
+  { token: "棰勮", suggestion: "预览" },
   { token: "鏂囦欢", suggestion: "文件" },
   { token: "鎵撳嵃", suggestion: "打印" },
   { token: "淇濆瓨", suggestion: "保存" },
@@ -46,7 +59,7 @@ const SUSPICIOUS_MOJIBAKE_TOKENS = [
 ];
 
 function listTrackedFiles() {
-  const stdout = execSync("git ls-files", { encoding: "utf8" });
+  const stdout = execSync("git ls-files --cached --others --exclude-standard", { encoding: "utf8" });
   return stdout
     .split(/\r?\n/g)
     .map((line) => line.trim())

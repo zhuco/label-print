@@ -158,32 +158,11 @@ export const INDUSTRY_TEMPLATES: IndustryTemplate[] = [
     iconPresetId: "truck",
   },
   {
-    id: "food-info-nutrition-ddl",
-    label: "食品信息+营养成分",
-    category: "食品饮料",
-    description: "来自 text.ddl 的双栏模板：左侧食品信息，右侧营养成分表。",
-    iconPresetId: "clipboard",
-  },
-  {
     id: "retail-price",
     label: "零售价签",
     category: "零售门店",
     description: "门店货架价签，突出商品名与价格。",
     iconPresetId: "shopping-bag",
-  },
-  {
-    id: "medical-tag",
-    label: "医药标签",
-    category: "医药健康",
-    description: "药品与耗材标识，含批号、效期与追溯信息。",
-    iconPresetId: "pills",
-  },
-  {
-    id: "asset-tag",
-    label: "资产标识",
-    category: "通用资产",
-    description: "设备资产管理标签，含资产编号与位置。",
-    iconPresetId: "monitor",
   },
 ];
 
@@ -665,12 +644,9 @@ function buildAssetTag(context: BuilderContext): EditorElement[] {
 
 const industryTemplateBuilders: Record<string, (context: BuilderContext) => EditorElement[]> = {
   "food-label": buildFoodLabel,
-  "food-info-nutrition-ddl": buildFoodInfoNutritionFromDdl,
   "apparel-tag": buildApparelTag,
   "logistics-waybill": buildLogisticsWaybill,
   "retail-price": buildRetailPrice,
-  "medical-tag": buildMedicalTag,
-  "asset-tag": buildAssetTag,
 };
 
 export function buildIndustryTemplateElements(

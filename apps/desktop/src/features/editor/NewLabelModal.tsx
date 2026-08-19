@@ -1,4 +1,4 @@
-import { ChangeEvent, useMemo } from "react";
+import { ChangeEvent, useEffect, useMemo } from "react";
 
 type NewLabelModalProps = {
   open: boolean;
@@ -31,6 +31,30 @@ export function NewLabelModal({
   onHeightChange,
   onConfirm,
 }: NewLabelModalProps) {
+  useEffect(() => {
+    if (!open) {
+      return;
+    }
+
+    const onKeyDown = (event: KeyboardEvent) => {
+      if (event.isComposing || event.repeat) {
+        return;
+      }
+      if (event.key === "Escape") {
+        event.preventDefault();
+        onClose();
+        return;
+      }
+      if (event.key === "Enter") {
+        event.preventDefault();
+        onConfirm();
+      }
+    };
+
+    window.addEventListener("keydown", onKeyDown);
+    return () => window.removeEventListener("keydown", onKeyDown);
+  }, [onClose, onConfirm, open]);
+
   const selectedPresetLabel = useMemo(
     () =>
       COMMON_LABEL_SIZES.find((item) => item.widthMm === widthMm && item.heightMm === heightMm)?.label ?? "",

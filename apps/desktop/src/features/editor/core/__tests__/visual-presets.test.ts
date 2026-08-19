@@ -4,6 +4,7 @@ import {
   ICON_PRESETS,
   SHAPE_PRESETS,
   getVisualPresetAspectRatio,
+  getVisualPresetViewBox,
   readIconPresetIdFromBinding,
   readShapePresetIdFromBinding,
   toIconPresetBindingValue,
@@ -50,5 +51,17 @@ describe("visual preset catalog", () => {
     expect(shapeRatio).toBeLessThan(1.5);
     expect(iconRatio).toBeGreaterThan(1.2);
     expect(iconRatio).toBeLessThan(1.5);
+  });
+
+  it("uses Chinese labels for every shape and icon preset", () => {
+    expect([...SHAPE_PRESETS, ...ICON_PRESETS].every((preset) => /[\u3400-\u9fff]/u.test(preset.label))).toBe(true);
+  });
+
+  it("keeps the rectangle preset square-cornered", () => {
+    expect(SHAPE_PRESETS.find((preset) => preset.id === "rectangle")?.markup).not.toContain("rx=");
+  });
+
+  it("uses the preset ink bounds for the SVG viewBox", () => {
+    expect(getVisualPresetViewBox("shape", "rectangle")).toBe("4 6 16 12");
   });
 });

@@ -27,7 +27,7 @@ import {
   type SnapTargets,
 } from "./core/layout";
 import { buildRulerTicks, isMajorRulerTick, shouldShowRulerLabel } from "./core/ruler";
-import { buildTextDecoration, computeSingleLineScaleX } from "./core/text-style";
+import { buildTextDecoration, computeTextFitScale } from "./core/text-style";
 import type { EditorElement, TextStyle } from "./core/types";
 import { normalizeVisualDashArray, normalizeVisualStrokeWidth, toAlphaColor, toShapeBorderWidthPx } from "./core/visual-style";
 import { TextStyleIcon } from "./TextStyleIcon";
@@ -96,6 +96,7 @@ type MarqueeState = {
 type ContextMenuState = {
   clientX: number;
   clientY: number;
+  selectedIds: string[];
 };
 
 const RESIZE_HANDLES: ResizeHandle[] = ["nw", "n", "ne", "w", "e", "sw", "s", "se"];
@@ -114,6 +115,8 @@ export function CanvasStage({ systemFonts }: CanvasStageProps) {
 
   const setSelection = useEditorStore((state) => state.setSelection);
   const toggleSelection = useEditorStore((state) => state.toggleSelection);
+  const groupSelection = useEditorStore((state) => state.groupSelection);
+  const ungroupSelection = useEditorStore((state) => state.ungroupSelection);
   const clearSelection = useEditorStore((state) => state.clearSelection);
   const replaceElements = useEditorStore((state) => state.replaceElements);
   const updateSelectedBinding = useEditorStore((state) => state.updateSelectedBinding);
@@ -121,6 +124,7 @@ export function CanvasStage({ systemFonts }: CanvasStageProps) {
   const updateElementRect = useEditorStore((state) => state.updateElementRect);
   const pushHistoryCheckpoint = useEditorStore((state) => state.pushHistoryCheckpoint);
   const saveSelectionAsCustomPreset = useEditorStore((state) => state.saveSelectionAsCustomPreset);
+  const updateCustomPresetFromSelection = useEditorStore((state) => state.updateCustomPresetFromSelection);
   const customPresets = useEditorStore((state) => state.customPresets);
 
   const rows = useDataImportStore((state) => state.rows);
@@ -131,6 +135,7 @@ export function CanvasStage({ systemFonts }: CanvasStageProps) {
   const [marqueeState, setMarqueeState] = useState<MarqueeState | null>(null);
   const [contextMenu, setContextMenu] = useState<ContextMenuState | null>(null);
   const [savePresetModalOpen, setSavePresetModalOpen] = useState(false);
+  const [savePresetSelectedIds, setSavePresetSelectedIds] = useState<string[]>([]);
   const [customPresetName, setCustomPresetName] = useState("");
   const [customPresetCategory, setCustomPresetCategory] = useState(DEFAULT_CUSTOM_PRESET_CATEGORIES[0]);
   const [zoom, setZoom] = useState(1);
@@ -238,6 +243,17 @@ export function CanvasStage({ systemFonts }: CanvasStageProps) {
     return () => window.removeEventListener("resize", onResize);
   }, [fitToViewport]);
 
+  useEffect(() => {
+    const container = scrollRef.current;
+    if (!container || typeof ResizeObserver === "undefined") {
+      return;
+    }
+
+    const observer = new ResizeObserver(() => fitToViewport());
+    observer.observe(container);
+    return () => observer.disconnect();
+  }, [fitToViewport]);
+
   const commitEditing = useCallback(() => {
     const current = editingRef.current;
     if (!current) {
@@ -255,8 +271,25 @@ export function CanvasStage({ systemFonts }: CanvasStageProps) {
       mode: "fixed",
       fixedValue: current.value,
     });
+    editingRef.current = null;
     setEditing(null);
   }, [setSelection, updateSelectedBinding]);
+
+  const updateEditingValue = useCallback((value: string) => {
+    const current = editingRef.current;
+    if (!current) {
+      return;
+    }
+
+    const next = { ...current, value };
+    editingRef.current = next;
+    setEditing(next);
+  }, []);
+
+  const cancelEditing = useCallback(() => {
+    editingRef.current = null;
+    setEditing(null);
+  }, []);
 
   const startDrag = useCallback(
     (event: ReactMouseEvent, element: EditorElement) => {
@@ -272,10 +305,13 @@ export function CanvasStage({ systemFonts }: CanvasStageProps) {
       }
 
       const currentSelected = selectedIdsRef.current;
+      const groupedIds = element.groupId
+        ? elementsRef.current.filter((item) => item.groupId === element.groupId).map((item) => item.id)
+        : [element.id];
       const dragIds =
         currentSelected.length > 1 && currentSelected.includes(element.id)
           ? currentSelected
-          : [element.id];
+          : groupedIds;
       setSelection(dragIds);
       pushHistoryCheckpoint();
 
@@ -366,10 +402,12 @@ export function CanvasStage({ systemFonts }: CanvasStageProps) {
     event.stopPropagation();
     const previewValue = resolveBindingValue(element.binding, previewRecord);
     setSelection([element.id]);
-    setEditing({
+    const nextEditing = {
       elementId: element.id,
       value: previewValue,
-    });
+    };
+    editingRef.current = nextEditing;
+    setEditing(nextEditing);
   };
 
   useEffect(() => {
@@ -527,14 +565,14 @@ export function CanvasStage({ systemFonts }: CanvasStageProps) {
       commitEditing();
     }
     if (event.key === "Escape") {
-      setEditing(null);
+      cancelEditing();
     }
   };
 
   const onTextareaKeyDown = (event: KeyboardEvent<HTMLTextAreaElement>) => {
     if (event.key === "Escape") {
       event.preventDefault();
-      setEditing(null);
+      cancelEditing();
       return;
     }
     if (event.key === "Enter" && event.ctrlKey) {
@@ -596,30 +634,39 @@ export function CanvasStage({ systemFonts }: CanvasStageProps) {
   };
 
   const onStageContextMenu = (event: ReactMouseEvent<HTMLDivElement>) => {
-    if (selectedIdsRef.current.length === 0) {
+    const currentSelectedIds = selectActiveDocument(useEditorStore.getState()).selectedIds;
+    if (currentSelectedIds.length === 0) {
       return;
     }
     event.preventDefault();
     setContextMenu({
       clientX: event.clientX,
       clientY: event.clientY,
+      selectedIds: [...currentSelectedIds],
     });
   };
 
   const onElementContextMenu = (event: ReactMouseEvent, element: EditorElement) => {
     event.preventDefault();
     event.stopPropagation();
-    if (!selectedIdsRef.current.includes(element.id)) {
-      setSelection([element.id]);
+    const currentSelectedIds = selectActiveDocument(useEditorStore.getState()).selectedIds;
+    const contextSelectedIds = currentSelectedIds.includes(element.id)
+      ? currentSelectedIds
+      : element.groupId
+        ? elementsRef.current.filter((item) => item.groupId === element.groupId).map((item) => item.id)
+        : [element.id];
+    if (!currentSelectedIds.includes(element.id)) {
+      setSelection(contextSelectedIds);
     }
     setContextMenu({
       clientX: event.clientX,
       clientY: event.clientY,
+      selectedIds: [...contextSelectedIds],
     });
   };
 
   const openSavePresetModal = () => {
-    const selected = selectedIdsRef.current;
+    const selected = contextMenu?.selectedIds ?? [];
     if (selected.length === 0) {
       setContextMenu(null);
       return;
@@ -630,6 +677,7 @@ export function CanvasStage({ systemFonts }: CanvasStageProps) {
         : `组合图形(${selected.length})`;
     setCustomPresetName(defaultName);
     setCustomPresetCategory(customPresetCategories[0] ?? "常用");
+    setSavePresetSelectedIds(selected);
     setSavePresetModalOpen(true);
     setContextMenu(null);
   };
@@ -638,12 +686,57 @@ export function CanvasStage({ systemFonts }: CanvasStageProps) {
     const saved = saveSelectionAsCustomPreset({
       name: customPresetName,
       category: customPresetCategory,
+      selectedIds: savePresetSelectedIds,
     });
     if (!saved) {
       return;
     }
     setSavePresetModalOpen(false);
   };
+
+  useEffect(() => {
+    if (!savePresetModalOpen) return;
+    const onKeyDown = (event: globalThis.KeyboardEvent) => {
+      if (event.defaultPrevented || event.isComposing || event.repeat) return;
+      if (event.key === "Escape") {
+        event.preventDefault();
+        setSavePresetModalOpen(false);
+      } else if (event.key === "Enter" && !(event.target as HTMLElement | null)?.closest("button, select")) {
+        event.preventDefault();
+        confirmSavePreset();
+      }
+    };
+    window.addEventListener("keydown", onKeyDown);
+    return () => window.removeEventListener("keydown", onKeyDown);
+  }, [customPresetCategory, customPresetName, savePresetModalOpen, savePresetSelectedIds]);
+
+  const withContextSelection = (action: () => void) => {
+    const selected = contextMenu?.selectedIds ?? [];
+    if (selected.length === 0) {
+      return;
+    }
+    setSelection(selected);
+    action();
+    setContextMenu(null);
+  };
+
+  const updatePresetFromContextSelection = () => {
+    const selected = contextMenu?.selectedIds ?? [];
+    const sourcePresetId = getCompletePresetInstanceSource(elementsRef.current, selected);
+    if (!sourcePresetId || selected.length === 0) {
+      return;
+    }
+    setSelection(selected);
+    updateCustomPresetFromSelection(sourcePresetId, selected);
+    setContextMenu(null);
+  };
+
+  const contextSelectionHasGroup = Boolean(
+    contextMenu?.selectedIds.some((id) => elementsRef.current.find((element) => element.id === id)?.groupId)
+  );
+  const contextSelectionPresetId = contextMenu
+    ? getCompletePresetInstanceSource(elementsRef.current, contextMenu.selectedIds)
+    : null;
 
   useEffect(() => {
     if (!marqueeState) {
@@ -888,22 +981,28 @@ export function CanvasStage({ systemFonts }: CanvasStageProps) {
                 const isSelected = selectedIds.includes(element.id);
                 const isEditing = editing?.elementId === element.id;
                 const preview = isEditing ? editing.value : resolveBindingValue(element.binding, previewRecord);
+                const isSquareRectangle =
+                  element.type === "shape" &&
+                  readShapePresetIdFromBinding(
+                    isEditing ? preview : element.binding.mode === "fixed" ? element.binding.fixedValue : undefined
+                  ) === "rectangle";
                 const showResizeHandles = isSelected && selectedIds.length === 1;
                 const isAutoWrap = element.textStyle.wrapMode !== "singleLine";
-                const noWrapScaleX =
-                  element.type === "text" && !isAutoWrap
-                    ? computeSingleLineScaleX({
+                const textFitScale =
+                  element.type === "text"
+                    ? computeTextFitScale({
                         text: preview,
                         textStyle: element.textStyle,
                         widthMm: element.widthMm,
+                        heightMm: element.heightMm,
                         mmToPx,
                       })
-                    : 1;
+                    : { scaleX: 1, scaleY: 1 };
 
                 return (
                   <div
                     key={element.id}
-                    className={`canvas-element ${isSelected ? "selected" : ""} ${isEditing ? "editing" : ""}`}
+                    className={`canvas-element ${isSquareRectangle ? "square-corners" : ""} ${isSelected ? "selected" : ""} ${isEditing ? "editing" : ""}`}
                     style={{
                       left: element.xMm * mmToPx,
                       top: element.yMm * mmToPx,
@@ -915,39 +1014,7 @@ export function CanvasStage({ systemFonts }: CanvasStageProps) {
                     onContextMenu={(event) => onElementContextMenu(event, element)}
                     onDoubleClick={(event) => startEditing(event, element)}
                   >
-                    {isEditing && element.type === "text" ? (
-                        <textarea
-                          autoFocus
-                          className="inline-editor inline-editor-multiline"
-                          value={editing.value}
-                          rows={3}
-                          onMouseDown={(event) => event.stopPropagation()}
-                          style={{
-                            fontFamily: element.textStyle.fontFamily,
-                            fontSize: `${Math.max(1, element.textStyle.fontSize * mmToPx)}px`,
-                            fontWeight: element.textStyle.fontWeight,
-                            fontStyle: element.textStyle.italic ? "italic" : "normal",
-                            textDecoration: buildTextDecoration(element.textStyle),
-                            textAlign: element.textStyle.align,
-                            color: element.textStyle.color,
-                            letterSpacing: `${element.textStyle.letterSpacing * mmToPx}px`,
-                            lineHeight: element.textStyle.lineHeight,
-                          }}
-                          onChange={(event) =>
-                            setEditing((current) =>
-                              current
-                                ? {
-                                    ...current,
-                                    value: event.target.value,
-                                  }
-                                : current
-                            )
-                          }
-                          onBlur={commitEditing}
-                          onKeyDown={onTextareaKeyDown}
-                          onFocus={selectAllOnFocus}
-                        />
-                    ) : element.type === "text" ? (
+                    {element.type === "text" ? (
                       <div
                         className="element-content"
                         style={{
@@ -964,13 +1031,23 @@ export function CanvasStage({ systemFonts }: CanvasStageProps) {
                           overflowWrap: isAutoWrap ? "anywhere" : "normal",
                           wordBreak: isAutoWrap ? "break-word" : "normal",
                           textOverflow: "clip",
-                          transform: !isAutoWrap ? `scaleX(${noWrapScaleX})` : undefined,
-                          transformOrigin: !isAutoWrap
-                            ? `${getAlignTransformOrigin(element.textStyle.align)} center`
-                            : undefined,
+                          justifyContent:
+                            element.textStyle.align === "center"
+                              ? "center"
+                              : element.textStyle.align === "right"
+                                ? "flex-end"
+                                : "flex-start",
                         }}
                       >
-                        {preview}
+                        <span
+                          className={`element-content-text ${isAutoWrap ? "is-auto-wrap" : "is-single-line"}`}
+                          style={{
+                            transform: `scale(${textFitScale.scaleX}, ${textFitScale.scaleY})`,
+                            transformOrigin: `${getAlignTransformOrigin(element.textStyle.align)} center`,
+                          }}
+                        >
+                          {preview}
+                        </span>
                       </div>
                     ) : element.type === "barcode" ? (
                       <div
@@ -1078,7 +1155,6 @@ export function CanvasStage({ systemFonts }: CanvasStageProps) {
                           return (
                             <div
                               className="shape-preview shape-preview-preset"
-                              style={shapeStyle}
                             >
                               <PresetGlyph
                                 kind="shape"
@@ -1170,38 +1246,34 @@ export function CanvasStage({ systemFonts }: CanvasStageProps) {
                       })()
                     )}
 
-                    {isEditing && element.type !== "text" ? (
-                      <input
-                        autoFocus
-                        aria-label="编辑内容（实时预览）"
-                        className="inline-editor inline-editor-popover"
-                        value={editing.value}
-                        onMouseDown={(event) => event.stopPropagation()}
-                        style={{
-                          fontFamily: element.textStyle.fontFamily,
-                          fontSize: `${Math.max(1, element.textStyle.fontSize * mmToPx)}px`,
-                          fontWeight: element.textStyle.fontWeight,
-                          fontStyle: element.textStyle.italic ? "italic" : "normal",
-                          textDecoration: buildTextDecoration(element.textStyle),
-                          textAlign: element.textStyle.align,
-                          color: element.textStyle.color,
-                          letterSpacing: `${element.textStyle.letterSpacing * mmToPx}px`,
-                          lineHeight: element.textStyle.lineHeight,
-                        }}
-                        onChange={(event) =>
-                          setEditing((current) =>
-                            current
-                              ? {
-                                  ...current,
-                                  value: event.target.value,
-                                }
-                              : current
-                          )
-                        }
-                        onBlur={commitEditing}
-                        onKeyDown={onInputKeyDown}
-                        onFocus={selectAllOnFocus}
-                      />
+                    {isEditing ? (
+                      element.type === "text" ? (
+                        <textarea
+                          autoFocus
+                          aria-label="编辑文本内容（实时预览）"
+                          className="inline-editor inline-editor-inplace inline-editor-multiline"
+                          value={editing.value}
+                          rows={Math.min(6, Math.max(2, editing.value.split(/\r?\n/).length))}
+                          spellCheck={false}
+                          onMouseDown={(event) => event.stopPropagation()}
+                          onChange={(event) => updateEditingValue(event.currentTarget.value)}
+                          onBlur={commitEditing}
+                          onKeyDown={onTextareaKeyDown}
+                          onFocus={selectAllOnFocus}
+                        />
+                      ) : (
+                        <input
+                          autoFocus
+                          aria-label="编辑内容（实时预览）"
+                          className="inline-editor inline-editor-popover"
+                          value={editing.value}
+                          onMouseDown={(event) => event.stopPropagation()}
+                          onChange={(event) => updateEditingValue(event.currentTarget.value)}
+                          onBlur={commitEditing}
+                          onKeyDown={onInputKeyDown}
+                          onFocus={selectAllOnFocus}
+                        />
+                      )
                     ) : null}
 
                     {showResizeHandles
@@ -1273,6 +1345,33 @@ export function CanvasStage({ systemFonts }: CanvasStageProps) {
           style={{ left: contextMenu.clientX, top: contextMenu.clientY }}
           onMouseDown={(event) => event.stopPropagation()}
         >
+          {contextMenu.selectedIds.length > 1 ? (
+            <button
+              type="button"
+              className="tool-ghost canvas-context-item"
+              onClick={() => withContextSelection(groupSelection)}
+            >
+              组合
+            </button>
+          ) : null}
+          {contextSelectionHasGroup ? (
+            <button
+              type="button"
+              className="tool-ghost canvas-context-item"
+              onClick={() => withContextSelection(ungroupSelection)}
+            >
+              取消组合
+            </button>
+          ) : null}
+          {contextSelectionPresetId ? (
+            <button
+              type="button"
+              className="tool-ghost canvas-context-item"
+              onClick={updatePresetFromContextSelection}
+            >
+              更新自定义图形
+            </button>
+          ) : null}
           <button type="button" className="tool-ghost canvas-context-item" onClick={openSavePresetModal}>
             添加到自定义图形...
           </button>
@@ -1324,6 +1423,16 @@ export function CanvasStage({ systemFonts }: CanvasStageProps) {
       ) : null}
     </div>
   );
+}
+
+function getCompletePresetInstanceSource(elements: EditorElement[], selectedIds: string[]): string | null {
+  if (selectedIds.length === 0) return null;
+  const selectedIdSet = new Set(selectedIds);
+  const first = elements.find((element) => selectedIdSet.has(element.id));
+  if (!first?.sourcePresetId || !first.presetInstanceId) return null;
+  const instanceElements = elements.filter((element) => element.presetInstanceId === first.presetInstanceId);
+  if (instanceElements.length !== selectedIds.length) return null;
+  return instanceElements.every((element) => selectedIdSet.has(element.id)) ? first.sourcePresetId : null;
 }
 
 function clamp(value: number, min: number, max: number): number {

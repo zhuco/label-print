@@ -3,6 +3,7 @@ import { create } from "zustand";
 import { alignSelectedElements } from "./core/layout";
 import {
   createBarcodeElement,
+  createDateTimeElement,
   createIconElement,
   createImageElement,
   createQrcodeElement,
@@ -107,23 +108,36 @@ type EditorState = {
   documents: EditorDocument[];
   activeDocumentId: string;
   customPresets: CustomPreset[];
+  hydrateCustomPresets: (presets: CustomPreset[]) => void;
   createDocument: (input?: CreateDocumentInput) => string;
   closeDocument: (id: string) => void;
   setActiveDocument: (id: string) => void;
   setDocumentTitle: (id: string, title: string) => void;
   setDocumentFileMeta: (id: string, filePath: string | null, fileName?: string | null) => void;
   addTextElement: () => void;
+  addDateTimeElement: () => void;
   addBarcodeElement: () => void;
   addImageElement: (input?: AddImageElementInput) => void;
   addQrcodeElement: () => void;
   addShapeElement: (input?: AddShapeElementInput) => void;
   addIconElement: (input?: AddIconElementInput) => void;
   applyIndustryTemplate: (templateId: string) => void;
-  saveSelectionAsCustomPreset: (input: { name: string; category: string }) => boolean;
+  saveSelectionAsCustomPreset: (input: {
+    name: string;
+    category: string;
+    selectedIds?: string[];
+  }) => boolean;
   applyCustomPreset: (id: string) => void;
+  updateCustomPresetMeta: (id: string, patch: { name: string; category: string }) => boolean;
+  updateCustomPresetFromSelection: (id: string, selectedIds?: string[]) => boolean;
+  duplicateCustomPreset: (id: string) => boolean;
+  deleteCustomPreset: (id: string) => boolean;
   setLabelSize: (patch: Partial<LabelSize>) => void;
   setSelection: (ids: string[]) => void;
   toggleSelection: (id: string) => void;
+  selectElementGroup: (id: string) => void;
+  groupSelection: () => boolean;
+  ungroupSelection: () => boolean;
   clearSelection: () => void;
   replaceElements: (elements: EditorElement[], guides?: SnapGuide[], recordHistory?: boolean) => void;
   updateElementRect: (id: string, patch: RectPatch, recordHistory?: boolean) => void;
@@ -152,6 +166,10 @@ function nextDocumentId(): string {
   const value = documentSequence;
   documentSequence += 1;
   return `doc-${Date.now()}-${value}`;
+}
+
+function nextGroupId(prefix = "group"): string {
+  return `${prefix}-${Date.now()}-${Math.random().toString(16).slice(2, 8)}`;
 }
 
 function round1(value: number): number {
@@ -322,6 +340,10 @@ function buildCustomPresetId(): string {
   return `custom-${Date.now()}-${Math.random().toString(16).slice(2, 8)}`;
 }
 
+function writePresetLibrary(presets: CustomPreset[]) {
+  writeCustomPresets(presets);
+}
+
 function getElementsBounds(elements: EditorElement[]) {
   const left = Math.min(...elements.map((item) => item.xMm));
   const top = Math.min(...elements.map((item) => item.yMm));
@@ -396,6 +418,10 @@ function normalizeBinding(
   if (next.mode === "expression" && next.expression === undefined) {
     next.expression = "";
   }
+  if (next.mode === "datetime") {
+    next.dateTimeSource ??= "printTime";
+    next.dateTimeFormat ??= "YYYY-MM-DD HH:mm:ss";
+  }
 
   return next;
 }
@@ -429,6 +455,16 @@ export const useEditorStore = create<EditorState>((set) => ({
   documents: [initialDocument],
   activeDocumentId: initialDocument.id,
   customPresets: initialCustomPresets,
+
+  hydrateCustomPresets: (presets) =>
+    set({
+      customPresets: presets.map((preset) => ({
+        ...preset,
+        schemaVersion: preset.schemaVersion ?? 1,
+        elements: normalizePresetElements(preset.elements),
+        elementCount: preset.elements.length,
+      })),
+    }),
 
   createDocument: (input) => {
     let newId = "";
@@ -520,6 +556,30 @@ export const useEditorStore = create<EditorState>((set) => ({
             textStyle: {
               fontSize: adaptive.fontSize,
             },
+          });
+          return {
+            ...document,
+            elements: [...document.elements, element],
+            selectedIds: [element.id],
+          };
+        },
+        true
+      ),
+    })),
+
+  addDateTimeElement: () =>
+    set((state) => ({
+      documents: updateActiveDocument(
+        state,
+        (document) => {
+          const adaptive = calcAdaptiveTextElement(document.labelSize);
+          const element = createDateTimeElement({
+            id: nextElementId("text"),
+            xMm: adaptive.xMm,
+            yMm: adaptive.yMm,
+            widthMm: Math.min(document.labelSize.widthMm - adaptive.xMm, Math.max(adaptive.widthMm, 28)),
+            heightMm: adaptive.heightMm,
+            textStyle: { fontSize: adaptive.fontSize },
           });
           return {
             ...document,
@@ -717,10 +777,11 @@ export const useEditorStore = create<EditorState>((set) => ({
     let saved = false;
     set((state) => {
       const active = selectActiveDocument(state);
-      if (!active || active.selectedIds.length === 0) {
+      const selectedIds = input.selectedIds ?? active?.selectedIds ?? [];
+      if (!active || selectedIds.length === 0) {
         return state;
       }
-      const selectedIdSet = new Set(active.selectedIds);
+      const selectedIdSet = new Set(selectedIds);
       const selectedElements = active.elements
         .filter((element) => selectedIdSet.has(element.id))
         .map((element) => cloneElement(element));
@@ -733,6 +794,7 @@ export const useEditorStore = create<EditorState>((set) => ({
       const now = Date.now();
       const preset: CustomPreset = {
         id: buildCustomPresetId(),
+        schemaVersion: 1,
         name,
         category,
         elements: normalizePresetElements(selectedElements),
@@ -741,7 +803,7 @@ export const useEditorStore = create<EditorState>((set) => ({
         updatedAt: now,
       };
       const nextCustomPresets = [preset, ...state.customPresets].slice(0, 200);
-      writeCustomPresets(nextCustomPresets);
+      writePresetLibrary(nextCustomPresets);
       saved = true;
       return {
         customPresets: nextCustomPresets,
@@ -762,6 +824,8 @@ export const useEditorStore = create<EditorState>((set) => ({
           state,
           (document) => {
             const normalized = preset.elements.map((element) => cloneElement(element));
+            const groupId = nextGroupId("group");
+            const presetInstanceId = nextGroupId("preset-instance");
             const bounds = getElementsBounds(normalized);
             const anchorX = round1(
               clamp(
@@ -789,6 +853,9 @@ export const useEditorStore = create<EditorState>((set) => ({
                 id: nextElementId(element.type),
                 xMm: nextX,
                 yMm: nextY,
+                groupId,
+                presetInstanceId,
+                sourcePresetId: preset.id,
               };
             });
             return {
@@ -801,6 +868,93 @@ export const useEditorStore = create<EditorState>((set) => ({
         ),
       };
     }),
+
+  updateCustomPresetMeta: (id, patch) => {
+    let updated = false;
+    set((state) => {
+      const name = patch.name.trim();
+      const category = patch.category.trim();
+      if (!name || !category || !state.customPresets.some((preset) => preset.id === id)) {
+        return state;
+      }
+      const now = Date.now();
+      const customPresets = state.customPresets.map((preset) =>
+        preset.id === id ? { ...preset, name, category, updatedAt: now } : preset
+      );
+      writePresetLibrary(customPresets);
+      updated = true;
+      return { customPresets };
+    });
+    return updated;
+  },
+
+  updateCustomPresetFromSelection: (id, selectedIds) => {
+    let updated = false;
+    set((state) => {
+      const active = selectActiveDocument(state);
+      const ids = selectedIds ?? active?.selectedIds ?? [];
+      const selectedIdSet = new Set(ids);
+      const elements = active?.elements
+        .filter((element) => selectedIdSet.has(element.id))
+        .map((element) => cloneElement(element)) ?? [];
+      if (elements.length === 0 || !state.customPresets.some((preset) => preset.id === id)) {
+        return state;
+      }
+      const now = Date.now();
+      const customPresets = state.customPresets.map((preset) =>
+        preset.id === id
+          ? {
+              ...preset,
+              elements: normalizePresetElements(elements),
+              elementCount: elements.length,
+              updatedAt: now,
+            }
+          : preset
+      );
+      writePresetLibrary(customPresets);
+      updated = true;
+      return { customPresets };
+    });
+    return updated;
+  },
+
+  duplicateCustomPreset: (id) => {
+    let duplicated = false;
+    set((state) => {
+      const source = state.customPresets.find((preset) => preset.id === id);
+      if (!source) {
+        return state;
+      }
+      const now = Date.now();
+      const duplicate: CustomPreset = {
+        ...source,
+        id: buildCustomPresetId(),
+        name: `${source.name} 副本`,
+        elements: normalizePresetElements(source.elements),
+        createdAt: now,
+        updatedAt: now,
+      };
+      const customPresets = [duplicate, ...state.customPresets].slice(0, 200);
+      writePresetLibrary(customPresets);
+      duplicated = true;
+      return { customPresets };
+    });
+    return duplicated;
+  },
+
+  deleteCustomPreset: (id) => {
+    let deleted = false;
+    set((state) => {
+      if (!state.customPresets.some((preset) => preset.id === id)) {
+        return state;
+      }
+      const customPresets = state.customPresets.filter((preset) => preset.id !== id);
+      writePresetLibrary(customPresets);
+      deleted = true;
+      return { customPresets };
+    });
+    return deleted;
+  },
 
   setLabelSize: (patch) =>
     set((state) => ({
@@ -846,6 +1000,81 @@ export const useEditorStore = create<EditorState>((set) => ({
         };
       }),
     })),
+
+  selectElementGroup: (id) =>
+    set((state) => ({
+      documents: updateActiveDocument(state, (document) => {
+        const element = document.elements.find((item) => item.id === id);
+        if (!element?.groupId) {
+          return { ...document, selectedIds: element ? [element.id] : [] };
+        }
+        return {
+          ...document,
+          selectedIds: document.elements.filter((item) => item.groupId === element.groupId).map((item) => item.id),
+        };
+      }),
+    })),
+
+  groupSelection: () => {
+    let grouped = false;
+    set((state) => ({
+      documents: updateActiveDocument(
+        state,
+        (document) => {
+          const selectedIdSet = new Set(document.selectedIds);
+          const selected = document.elements.filter((element) => selectedIdSet.has(element.id));
+          if (selected.length < 2) {
+            return document;
+          }
+          const existingGroupId = selected[0]?.groupId;
+          if (existingGroupId && selected.every((element) => element.groupId === existingGroupId)) {
+            return document;
+          }
+          const groupId = nextGroupId("group");
+          grouped = true;
+          return {
+            ...document,
+            elements: document.elements.map((element) =>
+              selectedIdSet.has(element.id) ? { ...element, groupId } : element
+            ),
+          };
+        },
+        true
+      ),
+    }));
+    return grouped;
+  },
+
+  ungroupSelection: () => {
+    let ungrouped = false;
+    set((state) => ({
+      documents: updateActiveDocument(
+        state,
+        (document) => {
+          const selectedIdSet = new Set(document.selectedIds);
+          const groupIds = new Set(
+            document.elements
+              .filter((element) => selectedIdSet.has(element.id) && element.groupId)
+              .map((element) => element.groupId as string)
+          );
+          if (groupIds.size === 0) {
+            return document;
+          }
+          ungrouped = true;
+          return {
+            ...document,
+            elements: document.elements.map((element) =>
+              element.groupId && groupIds.has(element.groupId)
+                ? { ...element, groupId: undefined, presetInstanceId: undefined }
+                : element
+            ),
+          };
+        },
+        true
+      ),
+    }));
+    return ungrouped;
+  },
 
   clearSelection: () =>
     set((state) => ({

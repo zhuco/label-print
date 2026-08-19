@@ -1,6 +1,6 @@
 [package]
 name = "label-desktop"
-version = "0.1.3"
+version = "0.1.4"
 edition = "2021"
 
 [lib]
@@ -19,13 +19,14 @@ default = ["winrt-ocr"]
 # Windows Runtime OCR requires Windows 10 APIs. The legacy Win7 build switches
 # its staged manifest to `legacy-win7`, retaining barcode recognition and the
 # existing Tesseract fallback without linking WinRT.
-winrt-ocr = ["dep:windows"]
+winrt-ocr = []
 legacy-win7 = []
 
 [dependencies]
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 tauri = { version = "2", features = [] }
+tauri-plugin-updater = "2"
 tauri-plugin-single-instance = "2"
 tauri-plugin-window-state = "2"
 rusqlite = { version = "0.31", features = ["bundled"] }
@@ -41,11 +42,13 @@ bardecoder = "0.5"
 rqrr = "0.7"
 
 [target.'cfg(target_os = "windows")'.dependencies]
-windows = { version = "0.58", optional = true, features = [
+windows = { version = "0.58", features = [
   "Foundation",
   "Foundation_Collections",
   "Graphics_Imaging",
   "Media_Ocr",
+  "Win32_Foundation",
+  "Win32_Security_Credentials",
   "Storage_Streams",
 ] }
 

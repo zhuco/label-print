@@ -25,6 +25,15 @@ type ComputeSingleLineScaleInput = {
   mmToPx: number;
 };
 
+type ComputeTextFitScaleInput = ComputeSingleLineScaleInput & {
+  heightMm: number;
+};
+
+export type TextFitScale = {
+  scaleX: number;
+  scaleY: number;
+};
+
 let singleLineMeasureCanvas: HTMLCanvasElement | null = null;
 
 export function computeSingleLineScaleX(input: ComputeSingleLineScaleInput): number {
@@ -36,13 +45,67 @@ export function computeSingleLineScaleX(input: ComputeSingleLineScaleInput): num
   const estimatedWidthPx =
     measuredWidthPx > 0
       ? measuredWidthPx
-      : estimateSingleLineUnits(plainText) * fontPx * 0.62 +
+      : estimateSingleLineUnits(plainText) * fontPx +
         Math.max(0, plainText.length - 1) * letterSpacingPx;
 
   const availableWidthPx = Math.max(1, input.widthMm * input.mmToPx - ELEMENT_FRAME_PADDING_X_PX * 2);
   const fitScale = estimatedWidthPx > 0 ? availableWidthPx / estimatedWidthPx : 1;
 
   return clamp(Math.min(declaredScale, fitScale), 0.001, 1);
+}
+
+/**
+ * Returns the visual scale needed to keep all text inside its element frame.
+ * Width and height are fitted independently so resizing one axis never hides
+ * the text on the other axis.
+ */
+export function computeTextFitScale(input: ComputeTextFitScaleInput): TextFitScale {
+  const isSingleLine = input.textStyle.wrapMode === "singleLine";
+  const fontPx = Math.max(1, input.textStyle.fontSize * input.mmToPx);
+  const letterSpacingPx = Math.max(0, input.textStyle.letterSpacing * input.mmToPx);
+  const availableWidthPx = Math.max(1, input.widthMm * input.mmToPx - ELEMENT_FRAME_PADDING_X_PX * 2);
+  const availableHeightPx = Math.max(1, input.heightMm * input.mmToPx - ELEMENT_FRAME_PADDING_Y_PX * 2);
+  const lineCount = isSingleLine
+    ? 1
+    : estimateWrappedLineCount(
+        input.text,
+        input.textStyle,
+        fontPx,
+        letterSpacingPx,
+        availableWidthPx
+      );
+  const lineAdvancePx = fontPx * Math.max(0.1, input.textStyle.lineHeight);
+  const naturalHeightPx = Math.max(1, fontPx + Math.max(0, lineCount - 1) * lineAdvancePx);
+
+  return {
+    scaleX: isSingleLine ? computeSingleLineScaleX(input) : 1,
+    scaleY: clamp(availableHeightPx / naturalHeightPx, 0.001, 1),
+  };
+}
+
+function estimateWrappedLineCount(
+  text: string,
+  textStyle: TextStyle,
+  fontPx: number,
+  letterSpacingPx: number,
+  availableWidthPx: number
+): number {
+  const explicitLines = text.split(/\r?\n/);
+
+  return explicitLines.reduce((total, line) => {
+    if (!line) {
+      return total + 1;
+    }
+
+    const measuredWidthPx = measureSingleLineTextWidthPx(line, textStyle, fontPx, letterSpacingPx);
+    const estimatedWidthPx =
+      measuredWidthPx > 0
+        ? measuredWidthPx
+        : estimateSingleLineUnits(line) * fontPx +
+          Math.max(0, line.length - 1) * letterSpacingPx;
+
+    return total + Math.max(1, Math.ceil(estimatedWidthPx / availableWidthPx));
+  }, 0);
 }
 
 function estimateSingleLineUnits(value: string): number {

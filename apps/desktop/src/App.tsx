@@ -2,6 +2,24 @@
 
 import appLogo from "./assets/icons/logo.png";
 import { useDataImportStore } from "./features/data-import/data-import.store";
+import {
+  AuthenticationRequiredError,
+  CloudApiClient,
+  CloudAssetRepository,
+  CloudApiError,
+  CloudAuthSession,
+  CloudLabelRepository,
+  createCloudCacheStore,
+  createCloudAssetCache,
+  createCredentialStore,
+  type CloudAssetCache,
+  type CloudCacheStore,
+  type CachedCloudLabel,
+  type CloudAuthState,
+  type CloudConflictResolution,
+  type CloudDocumentBinding,
+  isNetworkOrServiceError,
+} from "./features/cloud";
 import { EditorPage } from "./features/editor/EditorPage";
 import { NewLabelModal } from "./features/editor/NewLabelModal";
 import { type DirectPrintSubmitInput, PrintSubmitModal } from "./features/editor/PrintSubmitModal";
@@ -22,17 +40,32 @@ import {
 } from "./features/editor/core/template-snapshot";
 import type { EditorElement, LabelSize } from "./features/editor/core/types";
 import { type Calibration, type EditorDocument, selectActiveDocument, useEditorStore } from "./features/editor/editor.store";
-import { HomePage, type HomeRecentItem } from "./features/home/HomePage";
+import { HomePage } from "./features/home/HomePage";
+import { CloudAuthModal } from "./features/home/CloudAuthModal";
+import { CloudLabelThumbnail } from "./features/home/CloudLabelThumbnail";
+import { matchesLabelSearch } from "./features/home/label-search";
+import { createRecentTemplateStore, type RecentTemplateItem, type RecentTemplateStore } from "./features/home/recent-store";
+import { createTauriUpdateProvider, isTauriRuntime, UpdateCoordinator } from "./features/updates/update.service";
 import { listSystemFonts } from "./services/ipc/fonts";
 import { consumeLaunchFiles, subscribeLaunchFiles, type LaunchFilePayload } from "./services/ipc/launch-files";
-import { getCachedSystemPrinters, listSystemPrinters, submitDirectPrint } from "./services/ipc/print";
-import { type TemplateDto, listTemplates, pickTemplateFile, saveTemplate, saveTemplateFile } from "./services/ipc/template";
+import { getCachedSystemPrinters, listSystemPrinters, revealPdfOutput, submitDirectPrint } from "./services/ipc/print";
+import {
+  type TemplateDto,
+  listTemplates,
+  pickTemplateFile,
+  pickTemplateSavePath,
+  saveTemplate,
+  saveTemplateFile,
+} from "./services/ipc/template";
 import {
   closeWindow,
   minimizeWindow,
   startDragWindow,
   toggleMaximizeWindow,
 } from "./services/ipc/window-controls";
+import { toCloudLabelContent, toTemplateSnapshot, type CloudLabelContentV1 } from "@label/template-schema";
+import type { LabelCategory, OfficialTemplateSummary } from "@label/api-contract";
+import desktopPackage from "../package.json";
 
 const LABEL_MIN_SIZE_MM = 10;
 const DEFAULT_NEW_LABEL_SIZE: LabelSize = { widthMm: 40, heightMm: 30 };
@@ -40,9 +73,17 @@ const HOME_RECENT_STORAGE_KEY = "label-print.recent-opened";
 const HOME_RECENT_LIMIT = 24;
 const LAST_NEW_LABEL_SIZE_STORAGE_KEY = "label-print.last-new-label-size";
 const SOFTWARE_DEFAULT_PRINTER_STORAGE_KEY = "label-print.default-printer";
+
+export function shouldOpenCloudAuthOnStartup(state: CloudAuthState, isProduction = import.meta.env.PROD): boolean {
+  return isProduction && state.status === "anonymous";
+}
 const TITLEBAR_IGNORE_SELECTOR = "button, input, textarea, select, a, [data-no-titlebar-action]";
 const PRINTER_PREWARM_DELAY_MS = 4000;
 const PRINTER_PREWARM_IDLE_TIMEOUT_MS = 2000;
+const OPEN_LABEL_ALL_CATEGORIES = "__all_categories__";
+const OPEN_LABEL_UNCATEGORIZED = "__uncategorized__";
+// The public updater endpoint and signing key have not been published yet.
+const UPDATE_CHECK_ENABLED = false;
 
 type LocalFontMeta = {
   family?: string;
@@ -85,6 +126,16 @@ type SaveTemplateResult = {
   fileName: string;
   filePath?: string;
   handle?: SaveFileHandle;
+  replacedExisting?: boolean;
+};
+
+type SaveDialogRequest = {
+  documentId: string;
+  name: string;
+  destination: "cloud" | "local";
+  categoryId: string | null | undefined;
+  forceSaveAs: boolean;
+  closeAfterSave: boolean;
 };
 
 type CloseConfirmRequest =
@@ -97,6 +148,25 @@ type CloseConfirmRequest =
       kind: "app";
       unsavedCount: number;
     };
+
+type PrintTarget = {
+  title: string;
+  labelSize: LabelSize;
+  elements: EditorElement[];
+  calibration: Calibration;
+  printerId: string;
+  copies: number;
+};
+
+type PdfOutputDialog = {
+  path: string;
+  directory: string;
+};
+
+function getParentDirectory(filePath: string): string {
+  const separatorIndex = Math.max(filePath.lastIndexOf("\\"), filePath.lastIndexOf("/"));
+  return separatorIndex > 0 ? filePath.slice(0, separatorIndex) : filePath;
+}
 
 function resolveTargetElement(target: EventTarget | null): Element | null {
   if (target instanceof Element) {
@@ -140,7 +210,7 @@ function toSnapshotSignature(snapshot: TemplateSnapshot): string {
   return JSON.stringify(snapshot);
 }
 
-function parseRecentOpenedItems(raw: string): HomeRecentItem[] {
+function parseRecentOpenedItems(raw: string): RecentTemplateItem[] {
   try {
     const parsed = JSON.parse(raw) as unknown;
     if (!Array.isArray(parsed)) {
@@ -148,12 +218,20 @@ function parseRecentOpenedItems(raw: string): HomeRecentItem[] {
     }
 
     const output = parsed
-      .map<HomeRecentItem | null>((entry) => {
+      .map<RecentTemplateItem | null>((entry) => {
         if (!entry || typeof entry !== "object") {
           return null;
         }
-        const row = entry as Partial<HomeRecentItem> & { snapshot?: unknown };
+        const row = entry as Partial<RecentTemplateItem> & { snapshot?: unknown };
         if (row.saved !== true || typeof row.fileName !== "string" || !Number.isFinite(row.openedAt)) {
+          return null;
+        }
+        const source = row.source === "cloud" ? "cloud" : "local";
+        const cloudLabelId =
+          source === "cloud" && typeof row.cloudLabelId === "string" && row.cloudLabelId.trim().length > 0
+            ? row.cloudLabelId.trim()
+            : null;
+        if (source === "cloud" && !cloudLabelId) {
           return null;
         }
         const snapshot = parseTemplateSnapshot(JSON.stringify(row.snapshot ?? {}), row.fileName);
@@ -166,13 +244,18 @@ function parseRecentOpenedItems(raw: string): HomeRecentItem[] {
               ? row.id
               : `recent-${Date.now()}-${Math.random().toString(16).slice(2, 8)}`,
           fileName: row.fileName,
-          filePath: typeof row.filePath === "string" && row.filePath.trim().length > 0 ? row.filePath.trim() : null,
+          source,
+          filePath:
+            source === "local" && typeof row.filePath === "string" && row.filePath.trim().length > 0
+              ? row.filePath.trim()
+              : null,
+          cloudLabelId,
           saved: true,
           openedAt: Number(row.openedAt),
           snapshot: cloneSnapshot(snapshot),
         };
       })
-      .filter((item): item is HomeRecentItem => item !== null)
+      .filter((item): item is RecentTemplateItem => item !== null)
       .sort((left, right) => right.openedAt - left.openedAt);
 
     return output.slice(0, HOME_RECENT_LIMIT);
@@ -181,22 +264,18 @@ function parseRecentOpenedItems(raw: string): HomeRecentItem[] {
   }
 }
 
-function readRecentOpenedItems(): HomeRecentItem[] {
+/** Migrates pre-SQLite recent snapshots once, then removes their plaintext browser-storage copy. */
+function takeLegacyRecentOpenedItems(): RecentTemplateItem[] {
   if (typeof localStorage === "undefined") {
     return [];
   }
-  const raw = localStorage.getItem(HOME_RECENT_STORAGE_KEY);
-  if (!raw) {
+  try {
+    const raw = localStorage.getItem(HOME_RECENT_STORAGE_KEY);
+    localStorage.removeItem(HOME_RECENT_STORAGE_KEY);
+    return raw ? parseRecentOpenedItems(raw) : [];
+  } catch {
     return [];
   }
-  return parseRecentOpenedItems(raw);
-}
-
-function writeRecentOpenedItems(items: HomeRecentItem[]) {
-  if (typeof localStorage === "undefined") {
-    return;
-  }
-  localStorage.setItem(HOME_RECENT_STORAGE_KEY, JSON.stringify(items.slice(0, HOME_RECENT_LIMIT)));
 }
 
 function readLastNewLabelSize(): LabelSize {
@@ -249,6 +328,11 @@ function parsePositive(value: number, fallback: number): number {
     return fallback;
   }
   return Math.max(LABEL_MIN_SIZE_MM, value);
+}
+
+function formatByteSize(bytes: number): string {
+  if (bytes < 1024 * 1024) return `${Math.max(1, Math.round(bytes / 1024))} KB`;
+  return `${(bytes / 1024 / 1024).toFixed(bytes >= 100 * 1024 * 1024 ? 0 : 1)} MB`;
 }
 
 function isInitialUntouchedDocument(document: EditorDocument): boolean {
@@ -322,36 +406,20 @@ function buildRecentEntryLookupKey(fileName: string, filePath: string | null): s
   return `name:${normalizeDocumentLookupKey(fileName)}`;
 }
 
+function buildRecentItemLookupKey(item: Pick<RecentTemplateItem, "source" | "fileName" | "filePath" | "cloudLabelId">): string {
+  if (item.source === "cloud" && item.cloudLabelId) {
+    return `cloud:${item.cloudLabelId}`;
+  }
+  return buildRecentEntryLookupKey(item.fileName, item.filePath ?? null);
+}
+
 function buildRecentNameLookupKey(fileName: string): string {
   return normalizeRecentFileName(fileName, fileName).trim().toLocaleLowerCase("zh-CN");
 }
 
-function padRecentDateUnit(value: number): string {
-  return value.toString().padStart(2, "0");
-}
-
-function buildRecentDateSearchTokens(openedAt: number): string[] {
-  if (!Number.isFinite(openedAt)) {
-    return [];
-  }
-  const date = new Date(openedAt);
-  if (Number.isNaN(date.getTime())) {
-    return [];
-  }
-
-  const year = date.getFullYear().toString();
-  const month = padRecentDateUnit(date.getMonth() + 1);
-  const day = padRecentDateUnit(date.getDate());
-
-  return [
-    `${year}-${month}-${day}`,
-    `${year}/${month}/${day}`,
-    `${year}${month}${day}`,
-    `${month}-${day}`,
-    `${month}/${day}`,
-    `${year}年${month}月${day}日`,
-  ];
-}
+type RememberRecentOpenedOptions =
+  | { source?: "local"; filePath?: string | null }
+  | { source: "cloud"; cloudLabelId: string };
 
 function toChineseErrorMessage(error: unknown): string {
   const readObjectMessage = (value: unknown): string | null => {
@@ -476,6 +544,115 @@ function toChineseErrorMessage(error: unknown): string {
   return rawMessage;
 }
 
+function getAssetId(value: string | undefined): string | null {
+  if (!value?.startsWith("asset://")) return null;
+  const id = value.slice("asset://".length).trim();
+  return id || null;
+}
+
+async function prepareCloudContentAssets(
+  content: CloudLabelContentV1,
+  uploadAsset: (blob: Blob, mimeType: string, kind: "image" | "icon") => Promise<string>
+): Promise<CloudLabelContentV1> {
+  const uploaded = new Map<string, Promise<string>>();
+  const elements = await Promise.all(
+    content.elements.map(async (element) => {
+      if (element.binding.mode !== "fixed" || !element.binding.fixedValue?.startsWith("data:image/")) {
+        return structuredClone(element);
+      }
+      const dataUrl = element.binding.fixedValue;
+      let task = uploaded.get(dataUrl);
+      if (!task) {
+        task = fetch(dataUrl)
+          .then(async (response) => {
+            if (!response.ok) throw new Error("图片资源读取失败。");
+            const blob = await response.blob();
+            const kind = element.type === "icon" ? "icon" : "image";
+            return uploadAsset(blob, blob.type || "image/png", kind);
+          });
+        uploaded.set(dataUrl, task);
+      }
+      const assetId = await task;
+      return {
+        ...structuredClone(element),
+        binding: { ...element.binding, fixedValue: `asset://${assetId}` },
+      };
+    })
+  );
+  return { ...structuredClone(content), elements };
+}
+
+async function restoreSnapshotAssetDataUrls(
+  snapshot: TemplateSnapshot,
+  loadAsset: (assetId: string) => Promise<string>,
+  getCachedAsset: (assetId: string) => Promise<string | null>,
+  cacheAsset: (assetId: string, dataUrl: string) => Promise<void>
+): Promise<TemplateSnapshot> {
+  const elements = await Promise.all(
+    snapshot.elements.map(async (element) => {
+      if (element.binding.mode !== "fixed") return cloneElement(element);
+      const assetId = getAssetId(element.binding.fixedValue);
+      if (!assetId) return cloneElement(element);
+      const cached = await getCachedAsset(assetId);
+      const dataUrl = cached ?? (await loadAsset(assetId));
+      if (!cached) await cacheAsset(assetId, dataUrl);
+      return {
+        ...cloneElement(element),
+        binding: { ...element.binding, fixedValue: dataUrl },
+      };
+    })
+  );
+  return { ...cloneSnapshot(snapshot), elements };
+}
+
+function toCloudErrorMessage(error: unknown): string {
+  if (error instanceof AuthenticationRequiredError) {
+    return "请先登录后再使用个人云空间。";
+  }
+  if (error instanceof CloudApiError) {
+    switch (error.code) {
+      case "LABEL_LIMIT_REACHED":
+        return "标签数量已达当前套餐上限。";
+      case "REVISION_CONFLICT":
+        return "云端标签已在其他设备修改，请先处理冲突。";
+      case "PLAN_REQUIRED":
+        return "当前套餐不支持此云端功能。";
+      case "LABEL_NOT_FOUND":
+        return "云端标签不存在或已被永久删除。";
+      case "AUTH_REQUIRED":
+        return "登录状态已失效，请重新登录。";
+      case "ACCOUNT_NOT_FOUND":
+        return "该账号不存在，请检查邮箱或先注册账号。";
+      case "LOGIN_PASSWORD_INCORRECT":
+        return "密码错误，请重新输入。";
+      case "ACCOUNT_DISABLED":
+        return "该账号已被停用，请联系管理员。";
+      case "EMAIL_ALREADY_REGISTERED":
+        return "该邮箱已注册，请直接登录或找回密码。";
+      case "INVALID_EMAIL":
+        return "请输入正确的邮箱地址。";
+      case "INVALID_PASSWORD":
+        return "密码不符合要求，请使用至少 10 位字符。";
+      case "RATE_LIMITED":
+        return "操作过于频繁，请稍后重试。";
+      case "SERVICE_UNAVAILABLE":
+        return "云服务暂不可用，已保留本地缓存。";
+      case "INVALID_LABEL_CONTENT":
+        return "标签内容无效，未覆盖现有云端标签。";
+      case "ASSET_TOO_LARGE":
+        return "图片文件过大，请压缩或更换图片后重试。";
+      case "UNSUPPORTED_DOCUMENT_VERSION":
+        return "此标签由更高版本客户端创建，请升级软件后打开。";
+      default:
+        return error.message || "云服务请求失败。";
+    }
+  }
+  if (error instanceof TypeError && /failed to fetch|networkerror|load failed/i.test(error.message)) {
+    return "无法连接云端服务。请检查网络，并确认正在使用已配置云端 API 的最新版软件。";
+  }
+  return toChineseErrorMessage(error);
+}
+
 function toOwnedArrayBuffer(bytes: Uint8Array): ArrayBuffer {
   const buffer = new ArrayBuffer(bytes.byteLength);
   new Uint8Array(buffer).set(bytes);
@@ -552,6 +729,50 @@ async function listBrowserLocalFonts(): Promise<LocalFontMeta[]> {
 
 export default function App() {
   const initialCachedPrinters = useMemo(() => getCachedSystemPrinters(), []);
+  const recentTemplateStoreRef = useRef<RecentTemplateStore | null>(null);
+  const legacyRecentItemsRef = useRef<RecentTemplateItem[] | null>(null);
+  if (!recentTemplateStoreRef.current) recentTemplateStoreRef.current = createRecentTemplateStore();
+  if (!legacyRecentItemsRef.current) legacyRecentItemsRef.current = takeLegacyRecentOpenedItems();
+  const recentTemplateStore = recentTemplateStoreRef.current;
+  const cloudServicesRef = useRef<{
+    api: CloudApiClient;
+    session: CloudAuthSession;
+    repository: CloudLabelRepository;
+    cache: CloudCacheStore;
+    assetRepository: CloudAssetRepository;
+    assetCache: CloudAssetCache;
+  } | null>(null);
+  if (!cloudServicesRef.current) {
+    let session!: CloudAuthSession;
+    const client = new CloudApiClient({
+      getAccessToken: () => session?.accessToken ?? null,
+      onUnauthorized: async () => session?.refresh() ?? false,
+    });
+    session = new CloudAuthSession(client, createCredentialStore());
+    const assetRepository = new CloudAssetRepository(client);
+    const cache = createCloudCacheStore();
+    cloudServicesRef.current = {
+      api: client,
+      session,
+      repository: new CloudLabelRepository(
+        client,
+        cache,
+        () => session.user,
+        async (content) => prepareCloudContentAssets(content, async (blob, mimeType, kind) =>
+          (await assetRepository.upload({ bytes: blob, mimeType, kind })).id
+        )
+      ),
+      cache,
+      assetRepository,
+      assetCache: createCloudAssetCache(),
+    };
+  }
+  const cloudSession = cloudServicesRef.current.session;
+  const cloudApi = cloudServicesRef.current.api;
+  const cloudRepository = cloudServicesRef.current.repository;
+  const cloudCache = cloudServicesRef.current.cache;
+  const cloudAssetRepository = cloudServicesRef.current.assetRepository;
+  const cloudAssetCache = cloudServicesRef.current.assetCache;
 
   const documents = useEditorStore((state) => state.documents);
   const activeDocument = useEditorStore(selectActiveDocument);
@@ -583,6 +804,8 @@ export default function App() {
   const [settingsHeight, setSettingsHeight] = useState(30);
 
   const [printOpen, setPrintOpen] = useState(false);
+  const [printTarget, setPrintTarget] = useState<PrintTarget | null>(null);
+  const [pdfOutputDialog, setPdfOutputDialog] = useState<PdfOutputDialog | null>(null);
   const [submitStatus, setSubmitStatus] = useState("");
   const [submitting, setSubmitting] = useState(false);
   const [loadingPrinters, setLoadingPrinters] = useState(false);
@@ -592,17 +815,45 @@ export default function App() {
   const [systemPrinterCount, setSystemPrinterCount] = useState(0);
   const [usingCachedPrinters, setUsingCachedPrinters] = useState(initialCachedPrinters.length > 0);
   const [toolbarStatus, setToolbarStatus] = useState("");
-  const [copiedElements, setCopiedElements] = useState<EditorElement[]>([]);
+  const copiedElementsRef = useRef<EditorElement[]>([]);
   const [fileMenuOpen, setFileMenuOpen] = useState(false);
+  const [openLabelDialogOpen, setOpenLabelDialogOpen] = useState(false);
+  const [openLabelCategoryFilter, setOpenLabelCategoryFilter] = useState(OPEN_LABEL_ALL_CATEGORIES);
+  const [openLabelContentScrollTop, setOpenLabelContentScrollTop] = useState(0);
+  const openLabelContentRef = useRef<HTMLDivElement | null>(null);
   const [templateLibraryOpen, setTemplateLibraryOpen] = useState(false);
   const [templateLibraryLoading, setTemplateLibraryLoading] = useState(false);
   const [templateRows, setTemplateRows] = useState<TemplateDto[]>([]);
+  const [officialTemplateDialogOpen, setOfficialTemplateDialogOpen] = useState(false);
+  const [officialTemplateLoading, setOfficialTemplateLoading] = useState(false);
+  const [officialTemplates, setOfficialTemplates] = useState<OfficialTemplateSummary[]>([]);
   const [systemFonts, setSystemFonts] = useState<FontOption[]>(DEFAULT_FONT_OPTIONS);
   const [titlebarDragStart, setTitlebarDragStart] = useState<{ x: number; y: number } | null>(null);
   const [activePage, setActivePage] = useState<"editor" | "home">("home");
+  const [homeLibraryTab, setHomeLibraryTab] = useState<"recent" | "labels">("recent");
+  // undefined means all labels; null represents labels without a category.
+  const [homeSelectedCategoryId, setHomeSelectedCategoryId] = useState<string | null | undefined>(undefined);
+  const [homeCloudLabelListScrollTop, setHomeCloudLabelListScrollTop] = useState(0);
   const [pendingCloseConfirm, setPendingCloseConfirm] = useState<CloseConfirmRequest | null>(null);
-  const [recentOpenedItems, setRecentOpenedItems] = useState<HomeRecentItem[]>(() => readRecentOpenedItems());
+  const [saveDialogRequest, setSaveDialogRequest] = useState<SaveDialogRequest | null>(null);
+  const [saveDialogPending, setSaveDialogPending] = useState(false);
+  const [recentOpenedItems, setRecentOpenedItems] = useState<RecentTemplateItem[]>(() => legacyRecentItemsRef.current ?? []);
   const [homeSearchKeyword, setHomeSearchKeyword] = useState("");
+  const [cloudAuthState, setCloudAuthState] = useState<CloudAuthState>(() => cloudSession.state);
+  const [cloudLabels, setCloudLabels] = useState<CachedCloudLabel[]>([]);
+  const [cloudCategories, setCloudCategories] = useState<LabelCategory[]>([]);
+  const [cloudLabelView, setCloudLabelView] = useState<"active" | "trash">("active");
+  const [cloudLoading, setCloudLoading] = useState(false);
+  const [cloudLoadingMore, setCloudLoadingMore] = useState(false);
+  const [cloudNextCursor, setCloudNextCursor] = useState<string | null>(null);
+  const [cloudError, setCloudError] = useState("");
+  const [cloudSource, setCloudSource] = useState<"cloud" | "cache" | null>(null);
+  const [cloudAuthDialogOpen, setCloudAuthDialogOpen] = useState(false);
+  const [cloudAuthPending, setCloudAuthPending] = useState(false);
+  const [cloudAuthError, setCloudAuthError] = useState("");
+  const [updateStatus, setUpdateStatus] = useState("");
+  const cloudListQueryRef = useRef("");
+  const cloudListRequestRef = useRef(0);
 
   const fileMenuRef = useRef<HTMLDivElement | null>(null);
   const templateFileInputRef = useRef<HTMLInputElement | null>(null);
@@ -614,6 +865,9 @@ export default function App() {
   const availablePrintersRef = useRef<string[]>(initialCachedPrinters);
   const printerRefreshPendingRef = useRef(false);
   const hasLoadedSystemPrintersRef = useRef(hasLoadedSystemPrinters);
+  const cloudBindingsRef = useRef<Map<string, CloudDocumentBinding>>(new Map());
+  const updateCoordinatorRef = useRef<UpdateCoordinator | null>(null);
+  const automaticUpdateCheckRunningRef = useRef(false);
 
   const printableRows = useMemo(() => (rows.length > 0 ? rows : [{ code: "123456789" }]), [rows]);
   const printDialogPrinters = useMemo(() => {
@@ -631,28 +885,233 @@ export default function App() {
     if (availablePrinters.length > 0) {
       return availablePrinters[0];
     }
-    return activeDocument.printerId;
-  }, [activeDocument.printerId, availablePrinters, softwareDefaultPrinterId]);
+    return printTarget?.printerId || activeDocument.printerId;
+  }, [activeDocument.printerId, availablePrinters, printTarget?.printerId, softwareDefaultPrinterId]);
+  const activePrintTarget = printTarget ?? {
+    title: activeDocument.title,
+    labelSize: activeDocument.labelSize,
+    elements: activeDocument.elements,
+    calibration: activeDocument.calibration,
+    printerId: activeDocument.printerId,
+    copies: activeDocument.copies,
+  };
+
+  useEffect(() => {
+    if (!saveDialogRequest || saveDialogRequest.destination !== "cloud" || saveDialogRequest.categoryId !== undefined) {
+      return;
+    }
+    const binding = cloudBindingsRef.current.get(saveDialogRequest.documentId);
+    const boundLabel = binding ? cloudLabels.find((label) => label.id === binding.id) : null;
+    if (!boundLabel) {
+      return;
+    }
+    setSaveDialogRequest((current) =>
+      current && current.documentId === saveDialogRequest.documentId && current.categoryId === undefined
+        ? { ...current, categoryId: boundLabel.categoryId ?? null }
+        : current
+    );
+  }, [cloudLabels, saveDialogRequest]);
+
+  const openCurrentDocumentPrintDialog = () => {
+    setPrintTarget(null);
+    setSubmitStatus("");
+    setPrintOpen(true);
+  };
   const canUndo = activeDocument.undoStack.length > 0;
   const canRedo = activeDocument.redoStack.length > 0;
   const homeVisibleItems = useMemo(() => {
-    const keyword = homeSearchKeyword.trim().toLocaleLowerCase("zh-CN");
-    if (!keyword) {
-      return recentOpenedItems;
-    }
-    return recentOpenedItems.filter((item) => {
-      const fileName = item.fileName.toLocaleLowerCase("zh-CN");
-      const title = item.snapshot.title.toLocaleLowerCase("zh-CN");
-      const dateTokens = buildRecentDateSearchTokens(item.openedAt);
-      return (
-        fileName.includes(keyword) ||
-        title.includes(keyword) ||
-        dateTokens.some((token) => token.toLocaleLowerCase("zh-CN").includes(keyword))
-      );
-    });
+    return recentOpenedItems.filter((item) => matchesLabelSearch(item.fileName, homeSearchKeyword));
   }, [homeSearchKeyword, recentOpenedItems]);
+
+  useEffect(() => {
+    let active = true;
+    void recentTemplateStore.list().then((stored) => {
+      if (!active) return;
+      const validated = parseRecentOpenedItems(JSON.stringify(stored));
+      if (validated.length) {
+        setRecentOpenedItems(validated);
+        return;
+      }
+      const legacy = legacyRecentItemsRef.current ?? [];
+      if (legacy.length) void recentTemplateStore.replaceAll(legacy);
+    }).catch(() => {
+      // The in-memory state remains usable if native persistence is temporarily unavailable.
+    });
+    return () => { active = false; };
+  }, [recentTemplateStore]);
   const hasOnlyInitialUntouchedDocument = documents.length === 1 && isInitialUntouchedDocument(documents[0]);
   const visibleDocuments = activePage === "home" && hasOnlyInitialUntouchedDocument ? [] : documents;
+
+  const refreshCloudLabels = useCallback(
+    async (view = cloudLabelView, query = cloudListQueryRef.current) => {
+      const requestId = ++cloudListRequestRef.current;
+      setCloudLoadingMore(false);
+      if (!cloudSession.user) {
+        setCloudLabels([]);
+        setCloudNextCursor(null);
+        setCloudSource(null);
+        return;
+      }
+      setCloudLoading(true);
+      setCloudError("");
+      try {
+        const result = await cloudRepository.list({
+          status: view,
+          sort: "updated_desc",
+          limit: 50,
+          query: query.trim() || undefined,
+        });
+        if (requestId !== cloudListRequestRef.current) return;
+        setCloudLabels(result.items);
+        setCloudNextCursor(result.nextCursor);
+        setCloudSource(result.source);
+      } catch (error) {
+        if (requestId !== cloudListRequestRef.current) return;
+        setCloudError(toCloudErrorMessage(error));
+        setCloudLabels([]);
+        setCloudNextCursor(null);
+        setCloudSource(null);
+      } finally {
+        if (requestId === cloudListRequestRef.current) {
+          setCloudLoading(false);
+        }
+      }
+    },
+    [cloudLabelView, cloudRepository, cloudSession]
+  );
+
+  const refreshCloudProfile = useCallback(async () => {
+    if (!cloudSession.user) return;
+    try {
+      await cloudSession.refreshProfile();
+    } catch (error) {
+      setCloudError(toCloudErrorMessage(error));
+    }
+  }, [cloudSession]);
+
+  const refreshCloudCategories = useCallback(async () => {
+    if (!cloudSession.user) {
+      setCloudCategories([]);
+      return;
+    }
+    try {
+      setCloudCategories(await cloudApi.listLabelCategories());
+    } catch (error) {
+      setCloudError(toCloudErrorMessage(error));
+    }
+  }, [cloudApi, cloudSession]);
+
+  const loadMoreCloudLabels = useCallback(async () => {
+    const cursor = cloudNextCursor;
+    if (!cloudSession.user || !cursor || cloudLoading || cloudLoadingMore || cloudSource !== "cloud") return;
+    const requestId = ++cloudListRequestRef.current;
+    setCloudLoadingMore(true);
+    setCloudError("");
+    try {
+      const result = await cloudRepository.list({
+        status: cloudLabelView,
+        sort: "updated_desc",
+        limit: 50,
+        cursor,
+        query: cloudListQueryRef.current.trim() || undefined,
+      });
+      if (requestId !== cloudListRequestRef.current) return;
+      setCloudLabels((current) => {
+        const knownIds = new Set(current.map((item) => item.id));
+        return [...current, ...result.items.filter((item) => !knownIds.has(item.id))];
+      });
+      setCloudNextCursor(result.nextCursor);
+      setCloudSource(result.source);
+    } catch (error) {
+      if (requestId !== cloudListRequestRef.current) return;
+      setCloudError(toCloudErrorMessage(error));
+    } finally {
+      if (requestId === cloudListRequestRef.current) {
+        setCloudLoadingMore(false);
+      }
+    }
+  }, [cloudLabelView, cloudLoading, cloudLoadingMore, cloudNextCursor, cloudRepository, cloudSession, cloudSource]);
+
+  const selectCloudLabelView = (view: "active" | "trash") => {
+    setCloudLabelView(view);
+    void refreshCloudLabels(view);
+  };
+
+  const onChangeHomeSearchKeyword = (value: string) => {
+    setHomeSearchKeyword(value);
+    cloudListQueryRef.current = value.trim();
+    if (cloudSession.user) {
+      void refreshCloudLabels(cloudLabelView, cloudListQueryRef.current);
+    }
+  };
+
+  useEffect(() => {
+    const unsubscribe = cloudSession.subscribe((state) => setCloudAuthState(state));
+    void cloudSession.restore().then((state) => {
+      if (state.status === "authenticated") {
+        void refreshCloudLabels();
+        void refreshCloudCategories();
+      } else if (shouldOpenCloudAuthOnStartup(state)) {
+        setCloudAuthDialogOpen(true);
+      }
+    });
+    return unsubscribe;
+  }, [cloudSession, refreshCloudCategories, refreshCloudLabels]);
+
+  useEffect(() => {
+    const unsubscribeIdChange = cloudRepository.onLabelIdChanged((previousId, next) => {
+      cloudBindingsRef.current.forEach((binding, documentId) => {
+        if (binding.id === previousId) {
+          cloudBindingsRef.current.set(documentId, {
+            id: next.id,
+            revision: next.revision,
+            syncStatus: next.syncStatus,
+          });
+        }
+      });
+      setRecentOpenedItems((current) => {
+        let changed = false;
+        const migrated = current.map((item) => {
+          if (item.source !== "cloud" || item.cloudLabelId !== previousId) {
+            return item;
+          }
+          changed = true;
+          return { ...item, cloudLabelId: next.id };
+        });
+        if (changed) {
+          void recentTemplateStore.replaceAll(migrated).catch(() => undefined);
+        }
+        return changed ? migrated : current;
+      });
+    });
+    const syncPendingAndRefresh = () => {
+      if (!cloudSession.user) {
+        if (cloudSession.state.status === "loading") {
+          void cloudSession.restore().then((state) => {
+            if (state.status === "authenticated") void refreshCloudLabels();
+          });
+        }
+        return;
+      }
+      void cloudRepository.syncPending()
+        .then((result) => {
+          if (result.synced || result.conflicts) {
+            void refreshCloudLabels();
+            if (result.synced) void refreshCloudProfile();
+          }
+        })
+        .catch(() => undefined);
+    };
+    window.addEventListener("online", syncPendingAndRefresh);
+    window.addEventListener("focus", syncPendingAndRefresh);
+    const retryInterval = window.setInterval(syncPendingAndRefresh, 30_000);
+    return () => {
+      unsubscribeIdChange();
+      window.removeEventListener("online", syncPendingAndRefresh);
+      window.removeEventListener("focus", syncPendingAndRefresh);
+      window.clearInterval(retryInterval);
+    };
+  }, [cloudRepository, cloudSession, recentTemplateStore, refreshCloudLabels, refreshCloudProfile]);
 
   const markDocumentSavedBySnapshot = (documentId: string, snapshot: TemplateSnapshot) => {
     savedDocumentSignaturesRef.current.set(documentId, toSnapshotSignature(cloneSnapshot(snapshot)));
@@ -661,7 +1120,10 @@ export default function App() {
   const isDocumentUnsaved = (document: EditorDocument): boolean => {
     const savedSignature = savedDocumentSignaturesRef.current.get(document.id);
     if (!savedSignature) {
-      return !isInitialUntouchedDocument(document);
+      // A newly created or opened document can be closed before the effect
+      // below registers its baseline snapshot.  In that short interval, only
+      // an actual edit history should trigger the unsaved-changes warning.
+      return document.undoStack.length > 0 || document.redoStack.length > 0;
     }
     const currentSignature = toSnapshotSignature(buildTemplateSnapshot(document));
     return currentSignature !== savedSignature;
@@ -680,6 +1142,7 @@ export default function App() {
         : currentDocuments;
     const closingLastVisible = currentVisibleDocuments.length <= 1;
     closeDocument(target.id);
+    cloudBindingsRef.current.delete(target.id);
     if (closingLastVisible) {
       setActivePage("home");
     }
@@ -736,11 +1199,7 @@ export default function App() {
     }
 
     setPendingCloseConfirm(null);
-    const saved = await onSaveTemplate(undefined, request.documentId);
-    if (!saved) {
-      return;
-    }
-    closeDocumentNow(request.documentId);
+    await saveDocumentToOriginOrChoose(request.documentId, true);
   };
 
   const focusOpenedDocumentByFileName = (fileName: string): boolean => {
@@ -979,31 +1438,48 @@ export default function App() {
     }
   }, [documents]);
 
-  const rememberRecentOpened = (fileName: string, snapshot: TemplateSnapshot, filePath: string | null = null) => {
+  const replaceRecentOpenedItems = (items: RecentTemplateItem[]) => {
+    const next = items.slice(0, HOME_RECENT_LIMIT);
+    setRecentOpenedItems(next);
+    void recentTemplateStore.replaceAll(next).catch(() => {
+      // Keep the active editor usable when the local database cannot be written.
+    });
+  };
+
+  const rememberRecentOpened = (
+    fileName: string,
+    snapshot: TemplateSnapshot,
+    options: RememberRecentOpenedOptions = {}
+  ) => {
+    const source = options.source ?? "local";
     const normalizedName = normalizeRecentFileName(fileName, snapshot.title);
-    const normalizedPath = resolveKnownDocumentPath(filePath);
+    const normalizedPath = options.source === "cloud" ? null : resolveKnownDocumentPath(options.filePath ?? null);
+    const cloudLabelId = options.source === "cloud" ? options.cloudLabelId.trim() : null;
+    if (source === "cloud" && !cloudLabelId) {
+      return;
+    }
     const copiedSnapshot = cloneSnapshot(snapshot);
     const openedAt = Date.now();
-    const currentLookupKey = buildRecentEntryLookupKey(normalizedName, normalizedPath);
+    const currentLookupKey = source === "cloud"
+      ? `cloud:${cloudLabelId}`
+      : buildRecentEntryLookupKey(normalizedName, normalizedPath);
 
-    setRecentOpenedItems((previous) => {
-      const remaining = previous.filter(
-        (item) => buildRecentEntryLookupKey(item.fileName, item.filePath ?? null) !== currentLookupKey
-      );
-      const next: HomeRecentItem[] = [
-        {
-          id: `${openedAt}-${Math.random().toString(16).slice(2, 8)}`,
-          fileName: normalizedName,
-          filePath: normalizedPath,
-          saved: true,
-          openedAt,
-          snapshot: copiedSnapshot,
-        },
-        ...remaining,
-      ].slice(0, HOME_RECENT_LIMIT);
-      writeRecentOpenedItems(next);
-      return next;
-    });
+    const remaining = recentOpenedItems.filter(
+      (item) => buildRecentItemLookupKey(item) !== currentLookupKey
+    );
+    replaceRecentOpenedItems([
+      {
+        id: `${openedAt}-${Math.random().toString(16).slice(2, 8)}`,
+        fileName: normalizedName,
+        source,
+        filePath: normalizedPath,
+        cloudLabelId,
+        saved: true,
+        openedAt,
+        snapshot: copiedSnapshot,
+      },
+      ...remaining,
+    ]);
   };
 
   useEffect(() => {
@@ -1115,7 +1591,7 @@ export default function App() {
   };
 
   const onSubmitPrint = async (directPrintInput: DirectPrintSubmitInput): Promise<boolean> => {
-    if (activeDocument.elements.length === 0) {
+    if (activePrintTarget.elements.length === 0) {
       setSubmitStatus("打印前请至少添加一个元素。");
       return false;
     }
@@ -1129,11 +1605,11 @@ export default function App() {
       const payload = buildPrintSubmitPayload({
         templateId: 1,
         templateVersion: 2,
-        labelSize: activeDocument.labelSize,
+        labelSize: activePrintTarget.labelSize,
         printerId: directPrintInput.printerId,
         copies: requestedCopies,
-        calibration: activeDocument.calibration,
-        elements: activeDocument.elements,
+        calibration: activePrintTarget.calibration,
+        elements: activePrintTarget.elements,
         records: printableRows,
       });
       const submitPayload = toSubmitTaskPayload(payload);
@@ -1144,18 +1620,22 @@ export default function App() {
         copies: submitPayload.copies,
         calibrationJson: JSON.stringify(submitPayload.calibration),
         payloadJson: submitPayload.payload,
-        previewPngBase64: directPrintInput.previewPngBase64,
+        previewPngBase64s: directPrintInput.previewPngBase64s,
         widthMm: directPrintInput.widthMm,
         heightMm: directPrintInput.heightMm,
-        title: activeDocument.title,
+        title: activePrintTarget.title,
       });
       if (printResult.outputPath) {
+        setPdfOutputDialog({
+          path: printResult.outputPath,
+          directory: getParentDirectory(printResult.outputPath),
+        });
         setSubmitStatus(
-          `已输出 PDF（${printResult.outputPath}），任务 #${printResult.jobId}，共 ${payload.totalItems} 项。`
+          `已输出 PDF（${printResult.outputPath}），任务 #${printResult.jobId}，${payload.totalItems} 条数据 × ${requestedCopies} 份。`
         );
       } else {
         setSubmitStatus(
-          `已直接提交到打印机“${directPrintInput.printerId}”（任务 #${printResult.jobId}，共 ${payload.totalItems} 项）。`
+          `已直接提交到打印机“${directPrintInput.printerId}”（任务 #${printResult.jobId}，${payload.totalItems} 条数据 × ${requestedCopies} 份）。`
         );
       }
       return true;
@@ -1176,6 +1656,14 @@ export default function App() {
     writeSoftwareDefaultPrinterId(normalized);
   };
 
+  const onPrintCopiesChange = (value: number) => {
+    if (printTarget) {
+      setPrintTarget((current) => (current ? { ...current, copies: value } : current));
+      return;
+    }
+    setPrinterConfig({ copies: value });
+  };
+
   const writeTemplateBundleToHandle = async (bundle: Uint8Array, handle: SaveFileHandle) => {
     const writable = await handle.createWritable();
     await writable.write(toOwnedArrayBuffer(bundle));
@@ -1184,12 +1672,28 @@ export default function App() {
 
   const saveTemplateBundleWithDialog = async (
     bundle: Uint8Array,
-    suggestedBaseName: string,
-    validateTarget?: (fileName: string, filePath: string | null) => void
-  ): Promise<SaveTemplateResult> => {
+    suggestedBaseName: string
+  ): Promise<SaveTemplateResult | null> => {
     const pickerWindow = window as SaveFilePickerWindow;
     const suggestedName = `${sanitizeFileName(suggestedBaseName)}.lpt`;
     const fileBuffer = toOwnedArrayBuffer(bundle);
+
+    const nativeSelection = await pickTemplateSavePath(suggestedName);
+    if (nativeSelection.status === "cancelled") {
+      return null;
+    }
+    if (nativeSelection.status === "selected") {
+      const saved = await saveTemplateFile(nativeSelection.file.filePath, bundle);
+      if (!saved) {
+        throw new Error("当前运行环境不支持保存到所选位置。");
+      }
+      return {
+        mode: "path",
+        fileName: saved.fileName?.trim() || nativeSelection.file.fileName,
+        filePath: nativeSelection.file.filePath,
+        replacedExisting: nativeSelection.file.replacingExisting,
+      };
+    }
 
     if (typeof pickerWindow.showSaveFilePicker === "function") {
       const handle = await pickerWindow.showSaveFilePicker({
@@ -1204,7 +1708,6 @@ export default function App() {
         ],
       });
       const pickedFileName = handle.name?.trim() || suggestedName;
-      validateTarget?.(pickedFileName, null);
       await writeTemplateBundleToHandle(bundle, handle);
       return {
         mode: "picker",
@@ -1213,7 +1716,6 @@ export default function App() {
       };
     }
 
-    validateTarget?.(suggestedName, null);
     const url = URL.createObjectURL(new Blob([fileBuffer], { type: "application/octet-stream" }));
     const link = document.createElement("a");
     link.href = url;
@@ -1230,11 +1732,9 @@ export default function App() {
 
   const saveTemplateBundleToKnownTarget = async (
     bundle: Uint8Array,
-    handle: SaveFileHandle,
-    validateTarget?: (fileName: string, filePath: string | null) => void
+    handle: SaveFileHandle
   ): Promise<SaveTemplateResult> => {
     const targetFileName = handle.name?.trim() || "label-template.lpt";
-    validateTarget?.(targetFileName, null);
     await writeTemplateBundleToHandle(bundle, handle);
     return {
       mode: "direct",
@@ -1245,10 +1745,8 @@ export default function App() {
 
   const saveTemplateBundleToKnownPath = async (
     bundle: Uint8Array,
-    filePath: string,
-    validateTarget?: (fileName: string, filePath: string | null) => void
+    filePath: string
   ): Promise<SaveTemplateResult> => {
-    validateTarget?.(filePath, filePath);
     const result = await saveTemplateFile(filePath, bundle);
     if (!result) {
       throw new Error("当前运行环境不支持按路径保存。");
@@ -1273,50 +1771,29 @@ export default function App() {
       const explicitName = name?.trim() || "";
       const snapshot = buildTemplateSnapshot(document);
       const packed = packTemplateBundle(snapshot);
-      const currentDocumentLookupKey = buildRecentEntryLookupKey(document.title, document.filePath);
-      const validateTargetName = (candidateFileName: string, candidateFilePath: string | null) => {
-        const candidateNameKey = buildRecentNameLookupKey(candidateFileName);
-        if (!candidateNameKey) {
-          return;
-        }
-        const candidatePath = resolveKnownDocumentPath(candidateFilePath);
-        const conflict = recentOpenedItems.some((item) => {
-          if (buildRecentNameLookupKey(item.fileName) !== candidateNameKey) {
-            return false;
-          }
-          const itemLookupKey = buildRecentEntryLookupKey(item.fileName, item.filePath ?? null);
-          if (itemLookupKey === currentDocumentLookupKey) {
-            return false;
-          }
-          const itemPath = resolveKnownDocumentPath(item.filePath ?? null);
-          if (candidatePath && itemPath && normalizeDocumentLookupKey(candidatePath) === normalizeDocumentLookupKey(itemPath)) {
-            return false;
-          }
-          return true;
-        });
-        if (conflict) {
-          const displayName = normalizeRecentFileName(candidateFileName, explicitName || snapshot.title);
-          throw new Error(`模板名称“${displayName}”已存在于历史记录，请更换名称后再保存。`);
-        }
-      };
 
-      let result: SaveTemplateResult;
+      let result: SaveTemplateResult | null;
       if (!explicitName) {
         if (isDdlDocumentPath(document.filePath)) {
-          result = await saveTemplateBundleWithDialog(packed, document.title, validateTargetName);
+          result = await saveTemplateBundleWithDialog(packed, document.title);
         } else {
           const knownHandle = savedFileHandlesRef.current.get(document.id);
           const knownPath = resolveKnownDocumentPath(document.filePath);
           if (knownHandle) {
-            result = await saveTemplateBundleToKnownTarget(packed, knownHandle, validateTargetName);
+            result = await saveTemplateBundleToKnownTarget(packed, knownHandle);
           } else if (knownPath) {
-            result = await saveTemplateBundleToKnownPath(packed, knownPath, validateTargetName);
+            result = await saveTemplateBundleToKnownPath(packed, knownPath);
           } else {
-            result = await saveTemplateBundleWithDialog(packed, document.title, validateTargetName);
+            result = await saveTemplateBundleWithDialog(packed, document.title);
           }
         }
       } else {
-        result = await saveTemplateBundleWithDialog(packed, explicitName, validateTargetName);
+        result = await saveTemplateBundleWithDialog(packed, explicitName);
+      }
+
+      if (!result) {
+        setToolbarStatus("已取消保存。");
+        return false;
       }
 
       if (result.handle) {
@@ -1341,9 +1818,11 @@ export default function App() {
         savedTitle
       );
       markDocumentSavedBySnapshot(document.id, savedSnapshot);
-      rememberRecentOpened(savedTitle, savedSnapshot, nextFilePath ?? null);
+      rememberRecentOpened(savedTitle, savedSnapshot, { filePath: nextFilePath ?? null });
 
-      if (result.mode === "download") {
+      if (result.replacedExisting) {
+        setToolbarStatus(`已确认覆盖同名文件：${result.fileName}`);
+      } else if (result.mode === "download") {
         setToolbarStatus("模板已下载。");
       } else if (result.mode === "direct" || result.mode === "path") {
         setToolbarStatus("模板已保存。");
@@ -1352,16 +1831,251 @@ export default function App() {
       }
       return true;
     } catch (error) {
+      if (error instanceof DOMException && error.name === "AbortError") {
+        setToolbarStatus("已取消保存。");
+        return false;
+      }
       setToolbarStatus(`保存失败：${toChineseErrorMessage(error)}`);
       return false;
     }
   };
-  const onSaveAsTemplate = async () => {
-    const name = window.prompt("请输入模板名称", activeDocument.title)?.trim();
-    if (!name) {
+
+  const openSaveDialog = (
+    destination: "cloud" | "local" = "cloud",
+    forceSaveAs = false,
+    documentId?: string,
+    closeAfterSave = false
+  ) => {
+    const state = useEditorStore.getState();
+    const targetDocumentId = documentId ?? state.activeDocumentId;
+    const document = state.documents.find((item) => item.id === targetDocumentId);
+    if (!document) {
+      setToolbarStatus("当前标签不存在，无法保存。");
       return;
     }
-    await onSaveTemplate(name);
+    setSaveDialogRequest({
+      documentId: document.id,
+      name: document.title,
+      destination,
+      categoryId: cloudBindingsRef.current.get(document.id)
+        ? cloudLabels.find((label) => label.id === cloudBindingsRef.current.get(document.id)?.id)?.categoryId
+        : null,
+      forceSaveAs,
+      closeAfterSave,
+    });
+    if (destination === "cloud" && cloudSession.user) {
+      void Promise.all([refreshCloudLabels("active"), refreshCloudCategories()]);
+    }
+  };
+
+  const confirmSaveDialog = async () => {
+    if (!saveDialogRequest || saveDialogPending) {
+      return;
+    }
+    const name = saveDialogRequest.name.trim();
+    if (!name) {
+      setToolbarStatus("请输入标签名称。");
+      return;
+    }
+    setSaveDialogPending(true);
+    const request = saveDialogRequest;
+    try {
+      const saved = request.destination === "cloud"
+        ? await onSaveToCloud(request.documentId, { name, categoryId: request.categoryId })
+        : await onSaveTemplate(
+            request.forceSaveAs
+            || useEditorStore.getState().documents.find((item) => item.id === request.documentId)?.title !== name
+              ? name
+              : undefined,
+            request.documentId
+          );
+      if (saved) {
+        setSaveDialogRequest(null);
+        if (request.closeAfterSave) {
+          closeDocumentNow(request.documentId);
+        }
+      }
+    } finally {
+      setSaveDialogPending(false);
+    }
+  };
+
+  const onSaveToCloud = async (
+    documentId?: string,
+    options?: { name?: string; categoryId?: string | null }
+  ): Promise<boolean> => {
+    const document = useEditorStore
+      .getState()
+      .documents.find((item) => item.id === (documentId ?? useEditorStore.getState().activeDocumentId));
+    if (!document) {
+      setToolbarStatus("当前标签不存在，无法保存到云端。");
+      return false;
+    }
+    if (!cloudSession.user) {
+      setCloudAuthError("");
+      setCloudAuthDialogOpen(true);
+      setToolbarStatus("请先登录后再保存到云端。本地文件不会被自动上传。");
+      return false;
+    }
+
+    try {
+      setToolbarStatus("正在保存到云端...");
+      const snapshot = buildTemplateSnapshot(document);
+      const desiredName = options?.name?.trim() || document.title;
+      const sourceContent = toCloudLabelContent(snapshot);
+      let content: CloudLabelContentV1;
+      try {
+        content = await prepareCloudContentAssets(sourceContent, async (blob, mimeType, kind) =>
+          (await cloudAssetRepository.upload({ bytes: blob, mimeType, kind })).id
+        );
+      } catch (error) {
+        if (!isNetworkOrServiceError(error)) throw error;
+        // The repository queues this unmodified content locally; syncPending converts data URLs
+        // into managed assets before its later server request.
+        content = sourceContent;
+      }
+      const binding = cloudBindingsRef.current.get(document.id);
+      const saved = binding
+        ? await cloudRepository.update(binding.id, { expectedRevision: binding.revision, content })
+        : await cloudRepository.create({ name: desiredName, content });
+
+      let finalBinding: CloudDocumentBinding = {
+        id: saved.id,
+        revision: saved.revision,
+        syncStatus: saved.syncStatus,
+      };
+      let savedCategoryId = saved.categoryId ?? null;
+      if (desiredName !== saved.name) {
+        const renamed = await cloudRepository.rename(saved.id, desiredName, saved.revision);
+        finalBinding = { id: renamed.id, revision: renamed.revision, syncStatus: renamed.syncStatus };
+        savedCategoryId = renamed.categoryId ?? savedCategoryId;
+      }
+      const desiredCategoryId = options?.categoryId;
+      if (desiredCategoryId !== undefined && desiredCategoryId !== savedCategoryId && !finalBinding.id.startsWith("local-")) {
+        const categorized = await cloudApi.updateLabelCategory(finalBinding.id, desiredCategoryId, finalBinding.revision);
+        finalBinding = { id: categorized.id, revision: categorized.revision, syncStatus: "synced" };
+      }
+      cloudBindingsRef.current.set(document.id, finalBinding);
+      const savedSnapshot = { ...snapshot, title: desiredName };
+      if (desiredName !== document.title) setDocumentTitle(document.id, desiredName);
+      markDocumentSavedBySnapshot(document.id, savedSnapshot);
+      rememberRecentOpened(desiredName, savedSnapshot, {
+        source: "cloud",
+        cloudLabelId: finalBinding.id,
+      });
+      await Promise.all([refreshCloudLabels(), refreshCloudProfile()]);
+      setToolbarStatus(
+        finalBinding.syncStatus === "synced" ? "已保存到云端。" : "已写入本地缓存，离线时将自动同步。"
+      );
+      return true;
+    } catch (error) {
+      setToolbarStatus(`云端保存失败：${toCloudErrorMessage(error)}`);
+      return false;
+    }
+  };
+
+  const saveDocumentToOriginOrChoose = async (
+    documentId?: string,
+    closeAfterSave = false
+  ): Promise<boolean> => {
+    const state = useEditorStore.getState();
+    const targetDocumentId = documentId ?? state.activeDocumentId;
+    const document = state.documents.find((item) => item.id === targetDocumentId);
+    if (!document) {
+      setToolbarStatus("当前标签不存在，无法保存。");
+      return false;
+    }
+
+    const finishDirectSave = async (save: Promise<boolean>) => {
+      const saved = await save;
+      if (saved && closeAfterSave) {
+        closeDocumentNow(document.id);
+      }
+      return saved;
+    };
+
+    if (cloudBindingsRef.current.has(document.id)) {
+      return finishDirectSave(onSaveToCloud(document.id));
+    }
+
+    const cloudSourceId = document.filePath?.startsWith("cloud://")
+      ? document.filePath.slice("cloud://".length).trim()
+      : "";
+    if (cloudSourceId) {
+      try {
+        const sourceLabel =
+          cloudLabels.find((label) => label.id === cloudSourceId) ??
+          await cloudRepository.get(cloudSourceId);
+        cloudBindingsRef.current.set(document.id, {
+          id: sourceLabel.id,
+          revision: sourceLabel.revision,
+          syncStatus: sourceLabel.syncStatus,
+        });
+        return finishDirectSave(onSaveToCloud(document.id));
+      } catch (error) {
+        setToolbarStatus(`云端保存失败：${toCloudErrorMessage(error)}`);
+        return false;
+      }
+    }
+
+    const knownPath = resolveKnownDocumentPath(document.filePath);
+    const hasKnownHandle = savedFileHandlesRef.current.has(document.id);
+    if (hasKnownHandle || (knownPath && !isDdlDocumentPath(knownPath))) {
+      return finishDirectSave(onSaveTemplate(undefined, document.id));
+    }
+
+    openSaveDialog("cloud", false, document.id, closeAfterSave);
+    return false;
+  };
+
+  const onOpenCloudLibrary = () => {
+    setActivePage("home");
+    setHomeLibraryTab("labels");
+    if (cloudSession.user) {
+      void refreshCloudLabels("active");
+    }
+  };
+
+  const openLabelChooser = () => {
+    setOpenLabelDialogOpen(true);
+    setCloudLabelView("active");
+    const user = cloudSession.user;
+    if (user) {
+      // Keep already rendered labels visible while the cloud copy refreshes. If this
+      // is the first visit, prime the chooser from SQLite before waiting on network.
+      const refreshChooser = () => Promise.all([refreshCloudLabels("active"), refreshCloudCategories()]);
+      if (cloudLabelView === "active" && cloudLabels.length > 0) {
+        void refreshChooser();
+      } else {
+        void cloudCache.listLabels(user.id)
+          .then((cached) => {
+            const active = cached
+              .filter((label) => !label.deletedAt)
+              .sort((left, right) => right.updatedAt.localeCompare(left.updatedAt));
+            if (active.length > 0) {
+              setCloudLabels(active);
+              setCloudSource("cache");
+            }
+          })
+          .catch(() => undefined)
+          .finally(() => void refreshChooser());
+      }
+    }
+  };
+
+  useEffect(() => {
+    if (!openLabelDialogOpen || !openLabelContentRef.current) return;
+    openLabelContentRef.current.scrollTop = openLabelContentScrollTop;
+  }, [openLabelDialogOpen]);
+
+  const openLocalLabelFromChooser = () => {
+    setOpenLabelDialogOpen(false);
+    void onPickTemplateFile();
+  };
+
+  const openCloudLabelFromDialog = (label: CachedCloudLabel) => {
+    setOpenLabelDialogOpen(false);
+    void onOpenCloudLabel(label.id, label);
   };
 
   useEffect(() => {
@@ -1381,7 +2095,7 @@ export default function App() {
       }
       if (key === "s") {
         event.preventDefault();
-        void onSaveTemplate();
+        void saveDocumentToOriginOrChoose();
         return;
       }
       if (key === "p") {
@@ -1389,7 +2103,7 @@ export default function App() {
           return;
         }
         event.preventDefault();
-        setPrintOpen(true);
+        openCurrentDocumentPrintDialog();
         return;
       }
       if (key === "w") {
@@ -1400,15 +2114,15 @@ export default function App() {
 
     window.addEventListener("keydown", onKeyDown);
     return () => window.removeEventListener("keydown", onKeyDown);
-  }, [activePage, closeActiveDocumentByShortcut, onSaveTemplate]);
+  }, [activePage, closeActiveDocumentByShortcut, saveDocumentToOriginOrChoose]);
 
   const openSnapshotAsDocument = (
     snapshot: TemplateSnapshot,
     sourceFileName?: string,
     preferredTitle?: string
-  ): boolean => {
+  ): string | null => {
     if (sourceFileName && focusOpenedDocumentByFileName(sourceFileName)) {
-      return false;
+      return null;
     }
 
     const initialDocumentId = hasOnlyInitialUntouchedDocument ? documents[0]?.id : null;
@@ -1430,8 +2144,393 @@ export default function App() {
       title: normalizedTitle,
     });
     setActivePage("editor");
-    return true;
+    return createdDocumentId;
   };
+
+  const loadCloudLabelSnapshot = async (
+    labelId: string,
+    preferredLabel?: CachedCloudLabel
+  ): Promise<{ label: CachedCloudLabel; snapshot: TemplateSnapshot }> => {
+    if (!cloudSession.user) {
+      throw new AuthenticationRequiredError();
+    }
+    // The list and SQLite cache normally already contain the full document. Using
+    // them first removes a network round-trip from every edit/print click.
+    const inMemory = preferredLabel ?? cloudLabels.find((item) => item.id === labelId);
+    const cached = inMemory?.content
+      ? inMemory
+      : await cloudCache.getLabel(cloudSession.user.id, labelId);
+    const label = cached?.content ? cached : await cloudRepository.get(labelId);
+    if (!label.content) {
+      throw new Error("此标签内容尚未缓存，请联网后重试。");
+    }
+    const restored = toTemplateSnapshot(label.content, {
+      calibration: { ...activeDocument.calibration },
+      printerId: activeDocument.printerId,
+      copies: activeDocument.copies,
+    });
+    const snapshot: TemplateSnapshot = {
+      title: label.name,
+      labelSize: restored.labelSize,
+      elements: restored.elements as EditorElement[],
+      calibration: restored.calibration ?? { ...activeDocument.calibration },
+      printerId: restored.printerId ?? activeDocument.printerId,
+      copies: restored.copies ?? activeDocument.copies,
+    };
+    return {
+      label,
+      snapshot: await restoreSnapshotAssetDataUrls(
+        snapshot,
+        (assetId) => cloudAssetRepository.downloadAsDataUrl(assetId),
+        (assetId) => cloudAssetCache.get(cloudSession.user!.id, assetId),
+        (assetId, dataUrl) => cloudAssetCache.put(cloudSession.user!.id, assetId, dataUrl)
+      ),
+    };
+  };
+
+  const onOpenCloudLabel = async (labelId: string, preferredLabel?: CachedCloudLabel) => {
+    if (!cloudSession.user) {
+      setCloudAuthError("");
+      setCloudAuthDialogOpen(true);
+      return;
+    }
+    try {
+      setCloudError("");
+      const { label, snapshot } = await loadCloudLabelSnapshot(labelId, preferredLabel);
+      const documentId = openSnapshotAsDocument(snapshot, `cloud://${label.id}`, label.name);
+      if (documentId) {
+        cloudBindingsRef.current.set(documentId, {
+          id: label.id,
+          revision: label.revision,
+          syncStatus: label.syncStatus,
+        });
+      }
+      rememberRecentOpened(label.name, snapshot, { source: "cloud", cloudLabelId: label.id });
+      setToolbarStatus(label.syncStatus === "synced" ? `已打开云标签：${label.name}` : `已从缓存打开云标签：${label.name}`);
+    } catch (error) {
+      setCloudError(toCloudErrorMessage(error));
+    }
+  };
+
+  const onPrintCloudLabel = async (labelId: string, preferredLabel?: CachedCloudLabel) => {
+    if (!cloudSession.user) {
+      setCloudAuthError("");
+      setCloudAuthDialogOpen(true);
+      return;
+    }
+    try {
+      setCloudError("");
+      const { label, snapshot } = await loadCloudLabelSnapshot(labelId, preferredLabel);
+      rememberRecentOpened(label.name, snapshot, { source: "cloud", cloudLabelId: label.id });
+      setPrintTarget({
+        title: label.name,
+        labelSize: snapshot.labelSize,
+        elements: snapshot.elements,
+        calibration: snapshot.calibration,
+        printerId: snapshot.printerId,
+        copies: snapshot.copies,
+      });
+      setSubmitStatus("");
+      setPrintOpen(true);
+    } catch (error) {
+      setCloudError(toCloudErrorMessage(error));
+    }
+  };
+
+  const onMoveCloudLabelToTrash = async (labelId: string) => {
+    try {
+      const current = cloudLabels.find((item) => item.id === labelId);
+      await cloudRepository.moveToTrash(labelId, current?.revision);
+      await refreshCloudLabels();
+    } catch (error) {
+      setCloudError(toCloudErrorMessage(error));
+    }
+  };
+
+  const onRestoreCloudLabel = async (labelId: string) => {
+    try {
+      await cloudRepository.restore(labelId);
+      await refreshCloudLabels();
+    } catch (error) {
+      setCloudError(toCloudErrorMessage(error));
+    }
+  };
+
+  const onPermanentlyDeleteCloudLabel = async (labelId: string) => {
+    if (!window.confirm("永久删除后无法恢复，并会释放一个标签名额。是否继续？")) return;
+    try {
+      await cloudRepository.permanentlyDelete(labelId);
+      await Promise.all([refreshCloudLabels(), refreshCloudProfile()]);
+    } catch (error) {
+      setCloudError(toCloudErrorMessage(error));
+    }
+  };
+
+  const onCreateCloudCategory = async (name: string) => {
+    try {
+      setCloudError("");
+      await cloudApi.createLabelCategory(name);
+      await refreshCloudCategories();
+    } catch (error) {
+      setCloudError(toCloudErrorMessage(error));
+    }
+  };
+
+  const onDeleteCloudCategory = async (categoryId: string) => {
+    try {
+      setCloudError("");
+      await cloudApi.deleteLabelCategory(categoryId);
+      await Promise.all([refreshCloudCategories(), refreshCloudLabels()]);
+    } catch (error) {
+      setCloudError(toCloudErrorMessage(error));
+    }
+  };
+
+  const onSetCloudLabelCategory = async (labelId: string, categoryId: string | null) => {
+    const label = cloudLabels.find((item) => item.id === labelId);
+    if (!label) return;
+    try {
+      setCloudError("");
+      await cloudApi.updateLabelCategory(labelId, categoryId, label.revision);
+      await refreshCloudLabels();
+    } catch (error) {
+      setCloudError(toCloudErrorMessage(error));
+    }
+  };
+
+  const onResolveCloudConflict = async (labelId: string, resolution: CloudConflictResolution) => {
+    const prompt = resolution === "overwrite"
+      ? "将本机内容覆盖云端当前版本。是否继续？"
+      : resolution === "discard-local"
+        ? "将丢弃本机未同步修改并保留云端版本。是否继续？"
+        : "将本机未同步修改保存为新的云标签副本。是否继续？";
+    if (!window.confirm(prompt)) return;
+    try {
+      const resolved = await cloudRepository.resolveConflict(labelId, resolution);
+      for (const [documentId, binding] of cloudBindingsRef.current) {
+        if (binding.id !== labelId) continue;
+        if (resolution === "discard-local") cloudBindingsRef.current.delete(documentId);
+        else if (resolved) {
+          cloudBindingsRef.current.set(documentId, {
+            id: resolved.id,
+            revision: resolved.revision,
+            syncStatus: resolved.syncStatus,
+          });
+        }
+      }
+      await Promise.all([refreshCloudLabels(), refreshCloudProfile()]);
+      setToolbarStatus(
+        resolution === "overwrite" ? "已使用本机内容覆盖云端版本。"
+          : resolution === "discard-local" ? "已保留云端版本，本机文档已解除云端绑定。"
+            : "已将本机内容另存为新的云标签副本。"
+      );
+    } catch (error) {
+      setCloudError(toCloudErrorMessage(error));
+    }
+  };
+
+  const onLoginToCloud = async (input: { email: string; password: string }) => {
+    setCloudAuthPending(true);
+    setCloudAuthError("");
+    try {
+      await cloudSession.login(input);
+      setCloudAuthDialogOpen(false);
+      setCloudLabelView("active");
+      await cloudRepository.syncPending();
+      await Promise.all([refreshCloudLabels("active"), refreshCloudCategories()]);
+    } catch (error) {
+      setCloudAuthError(toCloudErrorMessage(error));
+    } finally {
+      setCloudAuthPending(false);
+    }
+  };
+
+  const onRegisterCloudAccount = async (input: { email: string; password: string; displayName?: string }) => {
+    setCloudAuthPending(true);
+    setCloudAuthError("");
+    try {
+      await cloudSession.register(input);
+      setCloudAuthDialogOpen(false);
+      setCloudLabelView("active");
+      await Promise.all([refreshCloudLabels("active"), refreshCloudCategories()]);
+    } catch (error) {
+      setCloudAuthError(toCloudErrorMessage(error));
+    } finally {
+      setCloudAuthPending(false);
+    }
+  };
+
+  const onRequestCloudPasswordReset = async (email: string) => {
+    setCloudAuthPending(true);
+    setCloudAuthError("");
+    try {
+      await cloudSession.requestPasswordReset(email);
+      setCloudAuthError("若该邮箱已注册，重置码已发送；请查看邮箱后粘贴重置码。");
+    } catch (error) {
+      setCloudAuthError(toCloudErrorMessage(error));
+    } finally {
+      setCloudAuthPending(false);
+    }
+  };
+
+  const onResetCloudPassword = async (input: { token: string; password: string }) => {
+    setCloudAuthPending(true);
+    setCloudAuthError("");
+    try {
+      await cloudSession.resetPassword(input.token, input.password);
+      setCloudAuthError("密码已重置，请使用新密码登录。");
+    } catch (error) {
+      setCloudAuthError(toCloudErrorMessage(error));
+    } finally {
+      setCloudAuthPending(false);
+    }
+  };
+
+  const onLogoutFromCloud = async () => {
+    try {
+      await cloudSession.logout();
+      cloudBindingsRef.current.clear();
+      setCloudLabels([]);
+      setCloudSource(null);
+      setCloudError("");
+      setToolbarStatus("已退出个人云空间；本地文件和打印功能仍可继续使用。");
+    } catch (error) {
+      setCloudError(toCloudErrorMessage(error));
+    }
+  };
+
+  const onRequestCloudAccountDeletion = async () => {
+    if (!window.confirm("注销后将立即冻结云端账号、退出所有设备，并在 14 天后删除云端数据。本机保存的文件不会被删除。是否继续？")) return;
+    const userId = cloudSession.user?.id;
+    if (!userId) return;
+    try {
+      const result = await cloudSession.requestAccountDeletion();
+      await Promise.all([cloudCache.clearUser(userId), cloudAssetCache.clearUser(userId)]);
+      cloudBindingsRef.current.clear();
+      setCloudLabels([]);
+      setCloudNextCursor(null);
+      setCloudSource(null);
+      setCloudError("");
+      setToolbarStatus(`账号已冻结，将在 ${new Intl.DateTimeFormat("zh-CN", { year: "numeric", month: "2-digit", day: "2-digit" }).format(new Date(result.scheduledFor))} 删除云端数据。`);
+    } catch (error) {
+      setCloudError(toCloudErrorMessage(error));
+    }
+  };
+
+  const onOpenPlanAndQuota = () => {
+    const user = cloudSession.user;
+    if (!user) {
+      setCloudAuthDialogOpen(true);
+      return;
+    }
+    const createHint = user.labelUsage.canCreate ? "当前可以继续新建云标签。" : "当前不能新建云标签，请永久删除标签或升级套餐。";
+    setToolbarStatus(`当前为${user.plan === "pro" ? "专业版" : "免费版"}，标签数 ${user.labelUsage.used}/${user.labelUsage.limit}。${createHint}`);
+  };
+
+  const onOpenOfficialTemplateLibrary = async () => {
+    if (!cloudSession.user) {
+      setCloudAuthError("");
+      setCloudAuthDialogOpen(true);
+      return;
+    }
+    setOfficialTemplateDialogOpen(true);
+    setOfficialTemplateLoading(true);
+    try {
+      setOfficialTemplates(await cloudApi.listOfficialTemplates());
+    } catch (error) {
+      setCloudError(toCloudErrorMessage(error));
+      setOfficialTemplates([]);
+    } finally {
+      setOfficialTemplateLoading(false);
+    }
+  };
+
+  const onUseOfficialTemplate = async (template: OfficialTemplateSummary) => {
+    const name = window.prompt("输入新标签名称", template.name)?.trim();
+    if (!name) return;
+    try {
+      setOfficialTemplateLoading(true);
+      const created = await cloudRepository.createFromOfficialTemplate(template.id, name);
+      setOfficialTemplateDialogOpen(false);
+      await Promise.all([refreshCloudLabels("active"), refreshCloudProfile()]);
+      await onOpenCloudLabel(created.id);
+      setToolbarStatus(`已从官方模板创建云标签：${created.name}`);
+    } catch (error) {
+      setCloudError(toCloudErrorMessage(error));
+    } finally {
+      setOfficialTemplateLoading(false);
+    }
+  };
+
+  const onCheckForUpdates = async (automatic = false) => {
+    if (!UPDATE_CHECK_ENABLED) {
+      if (!automatic) setUpdateStatus("自动更新暂未启用，请从发布渠道获取新版本。");
+      return;
+    }
+    try {
+      setUpdateStatus("正在检查更新...");
+      if (!updateCoordinatorRef.current) {
+        const provider = await createTauriUpdateProvider();
+        if (!provider) {
+          setUpdateStatus("当前 Web 环境不支持桌面更新检查。");
+          return;
+        }
+        updateCoordinatorRef.current = new UpdateCoordinator(provider);
+      }
+      const update = await updateCoordinatorRef.current.check();
+      if (!update) {
+        setUpdateStatus("当前已是最新版本。");
+        return;
+      }
+      const policy = update.mandatory
+        ? `当前版本已低于最低支持版本${update.minimumSupportedVersion ? ` ${update.minimumSupportedVersion}` : ""}，云功能需要升级后才能继续使用。`
+        : "";
+      const artifactSize = update.artifactSize ? `（安装包约 ${formatByteSize(update.artifactSize)}）` : "";
+      setUpdateStatus(`发现新版本 ${update.version}${artifactSize}${update.notes ? `：${update.notes}` : ""}${policy ? ` ${policy}` : ""}`);
+      const prompt = update.mandatory
+        ? `${policy}\n\n仍可继续使用本地文件和打印。${artifactSize}现在下载并安装更新吗？`
+        : `发现新版本 ${update.version}${artifactSize}。现在下载并安装吗？`;
+      if (automatic || !window.confirm(prompt)) return;
+      const installResult = await updateCoordinatorRef.current.install(
+        {
+          printing: submitting,
+          hasUnsyncedChanges:
+            documents.some((document) => isDocumentUnsaved(document)) ||
+            cloudLabels.some((label) => label.syncStatus !== "synced"),
+          importingOrExporting: false,
+          uploadingAssets: false,
+        },
+        (progress) => {
+          setUpdateStatus(
+            progress.totalBytes
+              ? `正在下载更新：${Math.round((progress.downloadedBytes / progress.totalBytes) * 100)}%`
+              : `正在下载更新：${Math.round(progress.downloadedBytes / 1024 / 1024)} MB`
+          );
+        }
+      );
+      if (!installResult.ok) setUpdateStatus(installResult.message);
+    } catch {
+      setUpdateStatus("无法连接更新服务，请检查网络后重试。");
+    }
+  };
+
+  useEffect(() => {
+    if (!isTauriRuntime()) return;
+    const checkSilently = () => {
+      if (automaticUpdateCheckRunningRef.current) return;
+      automaticUpdateCheckRunningRef.current = true;
+      void onCheckForUpdates(true).finally(() => {
+        automaticUpdateCheckRunningRef.current = false;
+      });
+    };
+    // Do not delay the home screen. A manual check remains available at all times.
+    const initialTimer = window.setTimeout(checkSilently, 5_000);
+    const periodicTimer = window.setInterval(checkSilently, 6 * 60 * 60 * 1_000);
+    return () => {
+      window.clearTimeout(initialTimer);
+      window.clearInterval(periodicTimer);
+    };
+  }, []);
 
   const openTemplateRecord = (template: TemplateDto) => {
     const snapshot = parseTemplateSnapshot(template.content, template.name);
@@ -1449,7 +2548,7 @@ export default function App() {
       template.name,
       preferredTitle
     );
-    rememberRecentOpened(template.name, titledSnapshot, template.name);
+    rememberRecentOpened(template.name, titledSnapshot, { filePath: template.name });
     if (!opened) {
       return;
     }
@@ -1612,7 +2711,7 @@ export default function App() {
     };
 
     const opened = openSnapshotAsDocument(titledSnapshot, documentSourcePath, preferredTitle);
-    rememberRecentOpened(normalizedDisplayName, titledSnapshot, documentSourcePath);
+    rememberRecentOpened(normalizedDisplayName, titledSnapshot, { filePath: documentSourcePath });
     if (!opened) {
       return;
     }
@@ -1707,7 +2806,7 @@ export default function App() {
       };
 
       const opened = openSnapshotAsDocument(titledSnapshot, file.name, preferredTitle);
-      rememberRecentOpened(file.name, titledSnapshot, null);
+      rememberRecentOpened(file.name, titledSnapshot);
       if (!opened) {
         return;
       }
@@ -1738,6 +2837,36 @@ export default function App() {
       setToolbarStatus("最近记录不存在或已失效。");
       return;
     }
+    if (target.source === "cloud") {
+      if (!target.cloudLabelId) {
+        setToolbarStatus("云端最近记录已失效。");
+        return;
+      }
+      const currentLabel = cloudLabels.find((label) => label.id === target.cloudLabelId);
+      if (currentLabel?.content) {
+        void onOpenCloudLabel(target.cloudLabelId, currentLabel);
+      } else {
+        // A cloud item in Recent already owns a complete persisted snapshot. Use it
+        // immediately instead of blocking the click on a fresh cloud request.
+        const snapshot = cloneSnapshot(target.snapshot);
+        const documentId = openSnapshotAsDocument(snapshot, `cloud://${target.cloudLabelId}`, target.fileName);
+        if (documentId) {
+          rememberRecentOpened(target.fileName, snapshot, {
+            source: "cloud",
+            cloudLabelId: target.cloudLabelId,
+          });
+          setToolbarStatus(`已从最近使用打开云标签：${target.fileName}`);
+          void cloudRepository.get(target.cloudLabelId).then((label) => {
+            cloudBindingsRef.current.set(documentId, {
+              id: label.id,
+              revision: label.revision,
+              syncStatus: label.syncStatus,
+            });
+          }).catch(() => undefined);
+        }
+      }
+      return;
+    }
     const snapshot = cloneSnapshot(target.snapshot);
     const preferredTitle = normalizeRecentFileName(target.fileName, snapshot.title);
     const titledSnapshot: TemplateSnapshot = {
@@ -1747,7 +2876,7 @@ export default function App() {
     const knownPath = resolveKnownDocumentPath(target.filePath ?? null);
     const sourcePath = knownPath || target.fileName;
     const opened = openSnapshotAsDocument(titledSnapshot, sourcePath, preferredTitle);
-    rememberRecentOpened(target.fileName, titledSnapshot, target.filePath ?? null);
+    rememberRecentOpened(target.fileName, titledSnapshot, { filePath: target.filePath ?? null });
     if (!opened) {
       return;
     }
@@ -1758,6 +2887,49 @@ export default function App() {
     }
   };
 
+  const onPrintRecentFromHome = (id: string) => {
+    const target = recentOpenedItems.find((item) => item.id === id);
+    if (!target) {
+      setToolbarStatus("最近记录不存在或已失效。");
+      return;
+    }
+    if (target.source === "cloud") {
+      if (!target.cloudLabelId) {
+        setToolbarStatus("云端最近记录已失效。");
+        return;
+      }
+      const snapshot = cloneSnapshot(target.snapshot);
+      const title = normalizeRecentFileName(target.fileName, snapshot.title);
+      setPrintTarget({
+        title,
+        labelSize: snapshot.labelSize,
+        elements: snapshot.elements,
+        calibration: snapshot.calibration,
+        printerId: snapshot.printerId,
+        copies: snapshot.copies,
+      });
+      setSubmitStatus("");
+      setPrintOpen(true);
+      rememberRecentOpened(target.fileName, snapshot, {
+        source: "cloud",
+        cloudLabelId: target.cloudLabelId,
+      });
+      return;
+    }
+    const snapshot = cloneSnapshot(target.snapshot);
+    const title = normalizeRecentFileName(target.fileName, snapshot.title);
+    setPrintTarget({
+      title,
+      labelSize: snapshot.labelSize,
+      elements: snapshot.elements,
+      calibration: snapshot.calibration,
+      printerId: snapshot.printerId,
+      copies: snapshot.copies,
+    });
+    setSubmitStatus("");
+    setPrintOpen(true);
+  };
+
   const onDeleteRecentFromHome = (id: string) => {
     const target = recentOpenedItems.find((item) => item.id === id);
     if (!target) {
@@ -1765,24 +2937,26 @@ export default function App() {
       return;
     }
     const next = recentOpenedItems.filter((item) => item.id !== id);
-    setRecentOpenedItems(next);
-    writeRecentOpenedItems(next);
+    replaceRecentOpenedItems(next);
     setToolbarStatus(`已删除最近记录：${target.fileName}`);
   };
 
   const onCopySelection = () => {
-    const selected = activeDocument.elements.filter((element) =>
-      activeDocument.selectedIds.includes(element.id)
+    const currentDocument = selectActiveDocument(useEditorStore.getState());
+    const selected = currentDocument.elements.filter((element) =>
+      currentDocument.selectedIds.includes(element.id)
     );
     if (selected.length === 0) {
       setToolbarStatus("请至少选择一个元素再复制。");
       return;
     }
-    setCopiedElements(selected.map((element) => cloneElement(element)));
+    copiedElementsRef.current = selected.map((element) => cloneElement(element));
     setToolbarStatus(`已复制 ${selected.length} 个元素。`);
   };
 
   const onPasteSelection = () => {
+    const currentDocument = selectActiveDocument(useEditorStore.getState());
+    const copiedElements = copiedElementsRef.current;
     if (copiedElements.length === 0) {
       setToolbarStatus("剪贴板为空。");
       return;
@@ -1790,12 +2964,152 @@ export default function App() {
 
     const copiedAt = Date.now();
     const nextElements = copiedElements.map((element, index) =>
-      cloneForPaste(element, index, activeDocument.labelSize, copiedAt)
+      cloneForPaste(element, index, currentDocument.labelSize, copiedAt)
     );
-    replaceElements([...activeDocument.elements, ...nextElements], [], true);
+    replaceElements([...currentDocument.elements, ...nextElements], [], true);
     setSelection(nextElements.map((item) => item.id));
     setToolbarStatus(`已粘贴 ${nextElements.length} 个元素。`);
   };
+
+  const onCutSelection = () => {
+    const currentDocument = selectActiveDocument(useEditorStore.getState());
+    const selected = currentDocument.elements.filter((element) =>
+      currentDocument.selectedIds.includes(element.id)
+    );
+    if (selected.length === 0) {
+      setToolbarStatus("请至少选择一个元素再剪切。");
+      return;
+    }
+    copiedElementsRef.current = selected.map((element) => cloneElement(element));
+    deleteSelection();
+    setToolbarStatus(`已剪切 ${selected.length} 个元素。`);
+  };
+
+  useEffect(() => {
+    const onKeyDown = (event: KeyboardEvent) => {
+      if (
+        event.defaultPrevented ||
+        activePage !== "editor" ||
+        isEditableShortcutTarget(event.target) ||
+        !(event.ctrlKey || event.metaKey) ||
+        event.altKey
+      ) {
+        return;
+      }
+
+      const key = event.key.toLowerCase();
+      if (key === "c") {
+        event.preventDefault();
+        onCopySelection();
+        return;
+      }
+      if (key === "x") {
+        event.preventDefault();
+        onCutSelection();
+        return;
+      }
+      if (key === "v") {
+        event.preventDefault();
+        onPasteSelection();
+      }
+    };
+
+    window.addEventListener("keydown", onKeyDown);
+    return () => window.removeEventListener("keydown", onKeyDown);
+  }, [activePage, onCopySelection, onCutSelection, onPasteSelection]);
+
+  useEffect(() => {
+    const onKeyDown = (event: KeyboardEvent) => {
+      if (event.defaultPrevented || event.isComposing || event.repeat) {
+        return;
+      }
+
+      if (event.key === "Enter") {
+        const target = event.target as HTMLElement | null;
+        if (target?.closest("button, select, textarea")) {
+          return;
+        }
+        if (saveDialogRequest && !saveDialogPending) {
+          event.preventDefault();
+          void confirmSaveDialog();
+          return;
+        }
+        if (pendingCloseConfirm) {
+          event.preventDefault();
+          if (pendingCloseConfirm.kind === "tab") {
+            void saveAndCloseConfirmTab();
+          } else {
+            acceptCloseConfirm();
+          }
+        }
+        return;
+      }
+
+      if (event.key !== "Escape") {
+        return;
+      }
+
+      if (saveDialogRequest) {
+        if (!saveDialogPending) {
+          event.preventDefault();
+          setSaveDialogRequest(null);
+        }
+        return;
+      }
+      if (pendingCloseConfirm) {
+        event.preventDefault();
+        dismissCloseConfirm();
+        return;
+      }
+      if (openLabelDialogOpen) {
+        event.preventDefault();
+        setOpenLabelDialogOpen(false);
+        return;
+      }
+      if (templateLibraryOpen) {
+        event.preventDefault();
+        setTemplateLibraryOpen(false);
+        return;
+      }
+      if (officialTemplateDialogOpen) {
+        if (!officialTemplateLoading) {
+          event.preventDefault();
+          setOfficialTemplateDialogOpen(false);
+        }
+        return;
+      }
+      if (fileMenuOpen) {
+        event.preventDefault();
+        setFileMenuOpen(false);
+        return;
+      }
+      if (document.querySelector(".modal-mask")) {
+        // Feature-owned dialogs handle Escape themselves. Never let Escape
+        // pass through an open dialog and close the whole application.
+        return;
+      }
+
+      event.preventDefault();
+      requestCloseWindow();
+    };
+
+    window.addEventListener("keydown", onKeyDown);
+    return () => window.removeEventListener("keydown", onKeyDown);
+  }, [
+    acceptCloseConfirm,
+    confirmSaveDialog,
+    dismissCloseConfirm,
+    fileMenuOpen,
+    officialTemplateDialogOpen,
+    officialTemplateLoading,
+    openLabelDialogOpen,
+    pendingCloseConfirm,
+    requestCloseWindow,
+    saveAndCloseConfirmTab,
+    saveDialogPending,
+    saveDialogRequest,
+    templateLibraryOpen,
+  ]);
 
   const onTitlebarBlankMouseDown = (event: ReactMouseEvent<HTMLElement>) => {
     if (event.button !== 0) {
@@ -1875,6 +3189,28 @@ export default function App() {
         </div>
 
         <div className="titlebar-actions">
+          {cloudAuthState.status === "authenticated" ? (
+            <div className="cloud-account-summary" aria-label="云端账号摘要">
+              <span className="cloud-account-quota">已使用 {cloudAuthState.user.labelUsage.used} / {cloudAuthState.user.labelUsage.limit} · {cloudAuthState.user.plan === "pro" ? "专业版" : "免费版"}</span>
+              <span className="cloud-account-name" title={cloudAuthState.user.displayName ?? "云端账号"}>{cloudAuthState.user.displayName ?? "云端账号"}</span>
+              <button type="button" className="cloud-account-action" onClick={() => { setActivePage("home"); setHomeLibraryTab("labels"); }}>我的标签</button>
+              <button type="button" className="cloud-account-action" onClick={() => void onLogoutFromCloud()}>退出</button>
+            </div>
+          ) : (
+            <button
+              type="button"
+              className="cloud-account-button"
+              onClick={() => {
+                setCloudAuthError("");
+                setCloudAuthDialogOpen(true);
+              }}
+              aria-label="登录或注册云端账号"
+            >
+              <span aria-hidden="true">☁</span>
+              <span>登录 / 注册</span>
+            </button>
+          )}
+          <span className="app-version" title="软件版本">v{desktopPackage.version}</span>
           <button type="button" className="win-btn" aria-label="最小化" onClick={() => void minimizeWindow()}>
             <span className="win-icon win-icon-minimize" aria-hidden="true" />
           </button>
@@ -1911,7 +3247,7 @@ export default function App() {
                   className="tool-ghost file-menu-item"
                   onClick={() => {
                     setFileMenuOpen(false);
-                    void onPickTemplateFile();
+                    openLabelChooser();
                   }}
                 >
                   打开
@@ -1931,7 +3267,7 @@ export default function App() {
                   className="tool-ghost file-menu-item"
                   onClick={() => {
                     setFileMenuOpen(false);
-                    void onSaveTemplate();
+                    void saveDocumentToOriginOrChoose();
                   }}
                 >
                   保存
@@ -1939,19 +3275,20 @@ export default function App() {
                 <button
                   type="button"
                   className="tool-ghost file-menu-item"
+                  data-testid="cmd-export-local"
                   onClick={() => {
                     setFileMenuOpen(false);
-                    void onSaveAsTemplate();
+                    openSaveDialog("local", true);
                   }}
                 >
-                  另存为
+                  另存为...
                 </button>
                 <button
                   type="button"
                   className="tool-ghost file-menu-item"
                   onClick={() => {
                     setFileMenuOpen(false);
-                    setPrintOpen(true);
+                    openCurrentDocumentPrintDialog();
                   }}
                 >
                   打印
@@ -1963,13 +3300,13 @@ export default function App() {
           <button type="button" className="tool-ghost" onClick={openNewLabelModal}>
             新建
           </button>
-          <button type="button" className="tool-ghost" data-testid="cmd-open" onClick={onPickTemplateFile}>
+          <button type="button" className="tool-ghost" data-testid="cmd-open" onClick={openLabelChooser}>
             打开
           </button>
-          <button type="button" className="tool-ghost" data-testid="cmd-save" onClick={() => void onSaveTemplate()}>
+          <button type="button" className="tool-ghost" data-testid="cmd-save" onClick={() => void saveDocumentToOriginOrChoose()}>
             保存
           </button>
-          <button type="button" className="tool-ghost" onClick={() => setPrintOpen(true)}>
+          <button type="button" className="tool-ghost" onClick={openCurrentDocumentPrintDialog}>
             打印
           </button>
         </div>
@@ -1983,10 +3320,13 @@ export default function App() {
           <button type="button" className="tool-ghost" onClick={redo} disabled={!canRedo}>
             前进
           </button>
-          <button type="button" className="tool-ghost" onClick={onCopySelection}>
+          <button type="button" className="tool-ghost" onClick={onCopySelection} title="Ctrl+C">
             复制
           </button>
-          <button type="button" className="tool-ghost" onClick={onPasteSelection}>
+          <button type="button" className="tool-ghost" onClick={onCutSelection} title="Ctrl+X">
+            剪切
+          </button>
+          <button type="button" className="tool-ghost" onClick={onPasteSelection} title="Ctrl+V">
             粘贴
           </button>
           <button type="button" className="tool-ghost" onClick={deleteSelection}>
@@ -2031,14 +3371,67 @@ export default function App() {
       ) : (
         <HomePage
           searchKeyword={homeSearchKeyword}
+          activeLibraryTab={homeLibraryTab}
+          onLibraryTabChange={setHomeLibraryTab}
+          selectedCategoryId={homeSelectedCategoryId}
+          onSelectedCategoryIdChange={setHomeSelectedCategoryId}
+          cloudLabelListScrollTop={homeCloudLabelListScrollTop}
+          onCloudLabelListScrollTopChange={setHomeCloudLabelListScrollTop}
           recentItems={homeVisibleItems}
-          onSearchKeywordChange={setHomeSearchKeyword}
+          onSearchKeywordChange={onChangeHomeSearchKeyword}
           onCreateLabel={openNewLabelModal}
-          onOpenLabel={onPickTemplateFile}
+          onOpenLabel={openLabelChooser}
           onOpenRecent={onOpenRecentFromHome}
+          onPrintRecent={onPrintRecentFromHome}
           onDeleteRecent={onDeleteRecentFromHome}
+          cloud={{
+            state: cloudAuthState.status,
+            user: cloudAuthState.status === "authenticated" ? cloudAuthState.user : null,
+            labels: cloudLabels,
+            categories: cloudCategories,
+            view: cloudLabelView,
+            loading: cloudLoading,
+            loadingMore: cloudLoadingMore,
+            hasMore: Boolean(cloudNextCursor && cloudSource === "cloud"),
+            error: cloudError,
+            source: cloudSource,
+            updateStatus,
+            onRequestLogin: () => {
+              setCloudAuthError("");
+              setCloudAuthDialogOpen(true);
+            },
+            onOpenLocalFile: () => void onPickTemplateFile(),
+            onOpenLabel: (id) => void onOpenCloudLabel(id),
+            onPrintLabel: (id) => void onPrintCloudLabel(id),
+            onRefresh: () => void refreshCloudLabels(),
+            onLoadMore: () => void loadMoreCloudLabels(),
+            onSetView: selectCloudLabelView,
+            onMoveToTrash: (id) => void onMoveCloudLabelToTrash(id),
+            onRestore: (id) => void onRestoreCloudLabel(id),
+            onPermanentlyDelete: (id) => void onPermanentlyDeleteCloudLabel(id),
+            onCreateCategory: (name) => void onCreateCloudCategory(name),
+            onDeleteCategory: (id) => void onDeleteCloudCategory(id),
+            onSetLabelCategory: (id, categoryId) => void onSetCloudLabelCategory(id, categoryId),
+            onResolveConflict: (id, resolution) => void onResolveCloudConflict(id, resolution),
+            onOpenPlan: onOpenPlanAndQuota,
+            onOpenOfficialTemplates: () => void onOpenOfficialTemplateLibrary(),
+            onLogout: () => void onLogoutFromCloud(),
+            onRequestAccountDeletion: () => void onRequestCloudAccountDeletion(),
+            onCheckForUpdates: () => void onCheckForUpdates(),
+          }}
         />
       )}
+
+      <CloudAuthModal
+        open={cloudAuthDialogOpen}
+        pending={cloudAuthPending}
+        error={cloudAuthError}
+        onClose={() => setCloudAuthDialogOpen(false)}
+        onLogin={onLoginToCloud}
+        onRegister={onRegisterCloudAccount}
+        onRequestPasswordReset={onRequestCloudPasswordReset}
+        onResetPassword={onResetCloudPassword}
+      />
 
       <NewLabelModal
         open={newLabelOpen}
@@ -2071,6 +3464,123 @@ export default function App() {
         }
         onConfirm={confirmSettings}
       />
+
+      {openLabelDialogOpen ? (
+        <div className="modal-mask" onClick={() => setOpenLabelDialogOpen(false)}>
+          <section
+            className="modal-card open-label-modal"
+            role="dialog"
+            aria-modal="true"
+            aria-labelledby="open-label-title"
+            onClick={(event) => event.stopPropagation()}
+          >
+            <header className="modal-header">
+              <h3 id="open-label-title">打开标签</h3>
+              <button type="button" onClick={() => setOpenLabelDialogOpen(false)} aria-label="关闭打开标签窗口">
+                ×
+              </button>
+            </header>
+            <div className="open-label-library">
+              <aside className="open-label-sidebar" aria-label="标签分类">
+                <button type="button" className="primary" onClick={openLocalLabelFromChooser}>
+                  从本机打开
+                </button>
+                <button
+                  type="button"
+                  className={openLabelCategoryFilter === OPEN_LABEL_ALL_CATEGORIES ? "open-label-category active" : "open-label-category"}
+                  onClick={() => setOpenLabelCategoryFilter(OPEN_LABEL_ALL_CATEGORIES)}
+                >
+                  全部标签
+                </button>
+                <button
+                  type="button"
+                  className={openLabelCategoryFilter === OPEN_LABEL_UNCATEGORIZED ? "open-label-category active" : "open-label-category"}
+                  onClick={() => setOpenLabelCategoryFilter(OPEN_LABEL_UNCATEGORIZED)}
+                >
+                  未分类
+                </button>
+                {cloudCategories.map((category) => (
+                  <button
+                    type="button"
+                    key={category.id}
+                    className={openLabelCategoryFilter === category.id ? "open-label-category active" : "open-label-category"}
+                    onClick={() => setOpenLabelCategoryFilter(category.id)}
+                    title={category.name}
+                  >
+                    {category.name}
+                  </button>
+                ))}
+              </aside>
+              <section
+                className="open-label-content"
+                aria-label="我的标签"
+                ref={openLabelContentRef}
+                onScroll={(event) => setOpenLabelContentScrollTop(event.currentTarget.scrollTop)}
+              >
+                <header className="open-label-content-header">
+                  <div>
+                    <strong>我的标签</strong>
+                    {cloudLoading && cloudLabels.length > 0
+                      ? <span className="muted">正在同步...</span>
+                      : cloudSource === "cache" ? <span className="muted">离线缓存</span> : null}
+                  </div>
+                  {cloudSession.user ? (
+                    <button type="button" className="tool-ghost" onClick={() => void refreshCloudLabels("active")}>刷新</button>
+                  ) : null}
+                </header>
+                {!cloudSession.user ? (
+                  <div className="open-label-empty">
+                    <p className="muted">登录后可在这里查看和打开云端标签。</p>
+                    <button type="button" className="primary" onClick={() => {
+                      setOpenLabelDialogOpen(false);
+                      setCloudAuthError("");
+                      setCloudAuthDialogOpen(true);
+                    }}>登录 / 注册</button>
+                  </div>
+                ) : cloudLoading && cloudLabels.length === 0 ? <p className="muted">正在加载标签...</p> : null}
+                {cloudSession.user && cloudError ? <p className="warning">{cloudError}</p> : null}
+                {cloudSession.user && !cloudError ? (
+                  (() => {
+                    const labels = cloudLabels.filter((label) => {
+                      if (openLabelCategoryFilter === OPEN_LABEL_ALL_CATEGORIES) return true;
+                      if (openLabelCategoryFilter === OPEN_LABEL_UNCATEGORIZED) return !label.categoryId;
+                      return label.categoryId === openLabelCategoryFilter;
+                    });
+                    if (labels.length === 0) return <p className="muted">此分类暂无标签。</p>;
+                    return (
+                      <div className="open-label-grid">
+                        {labels.map((label) => (
+                          <article className="open-label-card" key={label.id}>
+                            <button
+                              type="button"
+                              className="open-label-thumbnail"
+                              onClick={() => openCloudLabelFromDialog(label)}
+                              title={`打开标签：${label.name}`}
+                            >
+                              <CloudLabelThumbnail label={label} />
+                            </button>
+                            <strong className="open-label-name" title={label.name}>{label.name}</strong>
+                            <label className="open-label-move">
+                              <span>移动到分类</span>
+                              <select
+                                value={label.categoryId ?? ""}
+                                onChange={(event) => void onSetCloudLabelCategory(label.id, event.target.value || null)}
+                              >
+                                <option value="">未分类</option>
+                                {cloudCategories.map((category) => <option value={category.id} key={category.id}>{category.name}</option>)}
+                              </select>
+                            </label>
+                          </article>
+                        ))}
+                      </div>
+                    );
+                  })()
+                ) : null}
+              </section>
+            </div>
+          </section>
+        </div>
+      ) : null}
 
       {templateLibraryOpen ? (
         <div className="modal-mask" onClick={() => setTemplateLibraryOpen(false)}>
@@ -2122,6 +3632,204 @@ export default function App() {
         </div>
       ) : null}
 
+      {officialTemplateDialogOpen ? (
+        <div className="modal-mask" onClick={() => !officialTemplateLoading && setOfficialTemplateDialogOpen(false)}>
+          <section className="modal-card import-modal" onClick={(event) => event.stopPropagation()} aria-label="官方模板">
+            <header className="modal-header">
+              <h3>官方模板</h3>
+              <button type="button" onClick={() => setOfficialTemplateDialogOpen(false)} disabled={officialTemplateLoading} aria-label="关闭官方模板">×</button>
+            </header>
+            {officialTemplateLoading ? <p className="muted">正在加载模板...</p> : null}
+            {!officialTemplateLoading && officialTemplates.length === 0 ? <p className="muted">暂时没有可用的官方模板。</p> : null}
+            {!officialTemplateLoading && officialTemplates.length > 0 ? (
+              <table className="table">
+                <thead><tr><th>模板</th><th>套餐</th><th>操作</th></tr></thead>
+                <tbody>
+                  {officialTemplates.map((template) => (
+                    <tr key={template.id}>
+                      <td><strong>{template.name}</strong><br /><span className="muted">{template.category} · {template.description}</span></td>
+                      <td>{template.requiredPlan === "pro" ? "专业版" : "免费"}</td>
+                      <td><button type="button" className="tool-ghost" onClick={() => void onUseOfficialTemplate(template)}>使用</button></td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            ) : null}
+          </section>
+        </div>
+      ) : null}
+
+      {saveDialogRequest ? (
+        <div className="modal-mask" onClick={() => !saveDialogPending && setSaveDialogRequest(null)}>
+          <section
+            className="modal-card save-dialog-modal"
+            role="dialog"
+            aria-modal="true"
+            aria-labelledby="save-dialog-title"
+            onClick={(event) => event.stopPropagation()}
+          >
+            <header className="modal-header">
+              <h3 id="save-dialog-title">保存标签</h3>
+              <button
+                type="button"
+                onClick={() => setSaveDialogRequest(null)}
+                aria-label="关闭保存标签弹窗"
+                disabled={saveDialogPending}
+              >
+                ×
+              </button>
+            </header>
+            <div className="save-dialog-body">
+              <aside className="save-dialog-sidebar" aria-label="保存位置">
+                <button
+                  type="button"
+                  className={saveDialogRequest.destination === "cloud" ? "save-dialog-destination active" : "save-dialog-destination"}
+                  onClick={() => {
+                    setSaveDialogRequest((current) => current ? { ...current, destination: "cloud" } : current);
+                    if (cloudSession.user) void Promise.all([refreshCloudLabels("active"), refreshCloudCategories()]);
+                  }}
+                >
+                  <span className="save-dialog-destination-icon" aria-hidden="true">☁</span>
+                  <span><strong>云端标签</strong><small>保存到个人云空间</small></span>
+                </button>
+                <button
+                  type="button"
+                  className={saveDialogRequest.destination === "local" ? "save-dialog-destination active" : "save-dialog-destination"}
+                  onClick={() => setSaveDialogRequest((current) => current ? { ...current, destination: "local" } : current)}
+                >
+                  <span className="save-dialog-destination-icon" aria-hidden="true">▣</span>
+                  <span><strong>本地保存</strong><small>保存为 .lpt 文件</small></span>
+                </button>
+              </aside>
+              <section className="save-dialog-content">
+                {saveDialogRequest.destination === "cloud" ? (
+                  !cloudSession.user ? (
+                    <div className="save-dialog-empty">
+                      <p>登录后可选择云端分类并保存标签。</p>
+                      <button type="button" className="primary" onClick={() => {
+                        setCloudAuthError("");
+                        setCloudAuthDialogOpen(true);
+                      }}>登录 / 注册</button>
+                    </div>
+                  ) : cloudLoading && cloudLabels.length === 0 ? (
+                    <p className="muted">正在加载云端标签...</p>
+                  ) : (
+                    <div className="save-dialog-folders" aria-label="云端标签文件夹">
+                      {[{ id: null, name: "未分类" } as const, ...cloudCategories].map((category) => {
+                        const labels = cloudLabels.filter((label) => (label.categoryId ?? null) === category.id);
+                        const selected = saveDialogRequest.categoryId === category.id;
+                        return (
+                          <section
+                            className={selected ? "save-folder selected open" : "save-folder"}
+                            key={category.id ?? OPEN_LABEL_UNCATEGORIZED}
+                          >
+                            <button
+                              type="button"
+                              className="save-folder-header"
+                              onClick={() => setSaveDialogRequest((current) => current ? { ...current, categoryId: category.id } : current)}
+                              aria-pressed={selected}
+                              aria-expanded={selected}
+                            >
+                              <span aria-hidden="true">{selected ? "📂" : "📁"}</span>
+                              <strong>{category.name}</strong>
+                              <span className="save-folder-state">
+                                {selected ? "✓ 当前保存位置" : `${labels.length} 个标签`}
+                              </span>
+                            </button>
+                            {selected && labels.length > 0 ? (
+                              <div className="save-folder-labels">
+                                {labels.map((label) => <span key={label.id} title={label.name}>{label.name}</span>)}
+                              </div>
+                            ) : selected ? <p className="muted">文件夹为空</p> : null}
+                          </section>
+                        );
+                      })}
+                    </div>
+                  )
+                ) : (
+                  <div className="save-dialog-local-info">
+                    <span aria-hidden="true">▣</span>
+                    <strong>保存到这台电脑</strong>
+                    <p>点击保存后，在系统窗口中选择文件夹。若已有同名文件，系统会先请求覆盖确认。</p>
+                  </div>
+                )}
+              </section>
+            </div>
+            <footer className="save-dialog-footer">
+              <label className="save-dialog-name-field">
+                <span>标签名称</span>
+                <input
+                  type="text"
+                  value={saveDialogRequest.name}
+                  autoFocus
+                  maxLength={120}
+                  disabled={saveDialogPending}
+                  onChange={(event) => setSaveDialogRequest((current) => current ? { ...current, name: event.target.value } : current)}
+                  onKeyDown={(event) => {
+                    if (event.key === "Enter") {
+                      event.preventDefault();
+                      void confirmSaveDialog();
+                    }
+                  }}
+                />
+              </label>
+              <button type="button" className="tool-ghost" onClick={() => setSaveDialogRequest(null)} disabled={saveDialogPending}>
+                取消
+              </button>
+              <button
+                type="button"
+                className="primary"
+                onClick={() => void confirmSaveDialog()}
+                disabled={saveDialogPending || !saveDialogRequest.name.trim() || (saveDialogRequest.destination === "cloud" && !cloudSession.user)}
+              >
+                {saveDialogPending ? "正在保存..." : "保存"}
+              </button>
+            </footer>
+          </section>
+        </div>
+      ) : null}
+
+      {pdfOutputDialog ? (
+        <div className="modal-mask" onClick={() => setPdfOutputDialog(null)}>
+          <section
+            className="modal-card confirm-modal pdf-output-modal"
+            role="dialog"
+            aria-modal="true"
+            aria-labelledby="pdf-output-title"
+            onClick={(event) => event.stopPropagation()}
+          >
+            <header className="modal-header confirm-modal-header">
+              <h3 id="pdf-output-title">PDF 已保存</h3>
+            </header>
+            <p className="confirm-modal-lead">打印预览已直接保存为 PDF，可打开文件夹核对实际输出。</p>
+            <label className="pdf-output-path-field">
+              <span>保存目录</span>
+              <input type="text" value={pdfOutputDialog.directory} readOnly aria-label="PDF 保存目录" onFocus={(event) => event.currentTarget.select()} />
+            </label>
+            <label className="pdf-output-path-field">
+              <span>PDF 文件</span>
+              <input type="text" value={pdfOutputDialog.path} readOnly aria-label="PDF 文件路径" onFocus={(event) => event.currentTarget.select()} />
+            </label>
+            <div className="confirm-modal-actions">
+              <button type="button" className="tool-ghost" onClick={() => setPdfOutputDialog(null)}>
+                关闭
+              </button>
+              <button
+                type="button"
+                className="primary"
+                onClick={() => {
+                  void revealPdfOutput(pdfOutputDialog.path).catch((error) => {
+                    setToolbarStatus(`打开 PDF 文件夹失败：${toChineseErrorMessage(error)}`);
+                  });
+                }}
+              >
+                打开所在文件夹
+              </button>
+            </div>
+          </section>
+        </div>
+      ) : null}
+
       {pendingCloseConfirm ? (
         <div className="modal-mask" onClick={dismissCloseConfirm}>
           <section
@@ -2161,8 +3869,8 @@ export default function App() {
 
       <PrintSubmitModal
         open={printOpen}
-        title={activeDocument.title}
-        labelSize={activeDocument.labelSize}
+        title={activePrintTarget.title}
+        labelSize={activePrintTarget.labelSize}
         printers={printDialogPrinters}
         printerHint={
           loadingPrinters
@@ -2174,16 +3882,19 @@ export default function App() {
                 : "未读取到本机系统打印机，当前仅显示模板中保存的打印机。请在桌面版环境点击“刷新系统打印机”。"
         }
         printerId={activePrintDialogPrinterId}
-        copies={activeDocument.copies}
-        elements={activeDocument.elements}
-        previewRecord={printableRows[0] ?? {}}
+        copies={activePrintTarget.copies}
+        elements={activePrintTarget.elements}
+        printRecords={printableRows}
         submitStatus={submitStatus}
         submitting={submitting}
         loadingPrinters={loadingPrinters}
-        onClose={() => setPrintOpen(false)}
+        onClose={() => {
+          setPrintOpen(false);
+          setPrintTarget(null);
+        }}
         onRefreshPrinters={() => void refreshSystemPrinters(false)}
         onPrinterChange={onSelectDefaultPrinterForSoftware}
-        onCopiesChange={(value) => setPrinterConfig({ copies: value })}
+        onCopiesChange={onPrintCopiesChange}
         onConfirm={onSubmitPrint}
       />
     </main>

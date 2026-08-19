@@ -33,6 +33,28 @@ describe("binding helpers", () => {
     expect(value).toBe("A01-B2026");
   });
 
+  it("formats a fixed date time and can hide its time portion", () => {
+    const binding: ContentBinding = {
+      mode: "datetime",
+      dateTimeSource: "fixed",
+      fixedValue: "2026-08-08T09:05:04",
+      dateTimeFormat: "YYYY-MM-DD",
+    };
+
+    expect(resolveBindingValue(binding, {})).toBe("2026-08-08");
+  });
+
+  it("uses the supplied print timestamp for every dynamic date time resolution", () => {
+    const binding: ContentBinding = {
+      mode: "datetime",
+      dateTimeSource: "printTime",
+      dateTimeFormat: "YYYY-MM-DD HH:mm:ss",
+    };
+    const now = new Date(2026, 7, 8, 9, 5, 4);
+
+    expect(resolveBindingValue(binding, {}, { now })).toBe("2026-08-08 09:05:04");
+  });
+
   it("defaults to fixed tip text", () => {
     const binding = createDefaultBinding();
     expect(binding).toEqual({ mode: "fixed", fixedValue: "双击编辑" });

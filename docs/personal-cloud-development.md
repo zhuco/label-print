@@ -1,8 +1,10 @@
 # 个人云空间开发文档
 
-状态：草案  
-适用版本：桌面端 v0.1.3 之后  
-最后更新：2026-08-04
+状态：设计基线（实时实现状态见 [文档导航与第一版功能状态](README.md)）
+
+适用版本：桌面端 v0.1.4 之后
+
+最后更新：2026-08-07
 
 ## 1. 文档目标
 
@@ -353,12 +355,16 @@ type LabelAsset = {
   userId: string;
   mimeType: string;
   kind: "image" | "icon";
-  objectKey: string;
   sha256: string;
   byteSize: number;
+  state: "initiated" | "completed" | "deleted";
   createdAt: string;
+  completedAt: string | null;
+  deletedAt: string | null;
 };
 ```
+
+`objectKey` 是对象存储内部实现细节，只保存在服务端数据库中；客户端只接收资源 ID、元数据和短期签名 URL。
 
 上传流程：
 
@@ -735,7 +741,7 @@ CREATE TABLE cloud_sync_queue (
   payload TEXT NOT NULL,
   expected_revision INTEGER,
   attempts INTEGER NOT NULL DEFAULT 0,
-  next_retry_at TEXT,
+  next_attempt_at TEXT,
   created_at TEXT NOT NULL
 );
 ```
@@ -750,6 +756,8 @@ CREATE TABLE cloud_sync_queue (
 
 缓存必须按 `user_id` 隔离。退出登录后不得向其他登录用户展示前一个账号的缓存。是否在退出时清理缓存可以作为本机设置，但默认应隐藏并停止同步。
 
+网络或服务暂时不可用时，同步队列应根据 `attempts` 写入指数退避后的 `next_attempt_at`，避免持续重试；桌面端在恢复网络、重新获得窗口焦点和定时检查时尝试到期的操作。revision 冲突不自动重试，必须由用户选择处理方式。
+
 ## 11. 认证与安全
 
 最低要求：
@@ -760,10 +768,11 @@ CREATE TABLE cloud_sync_queue (
 - 服务端从 Token 获取用户身份，不接受请求体中的 `user_id`。
 - 每次读取、修改和删除标签都校验标签归属于当前用户。
 - 登录、注册、忘记密码和资源上传接口需要限流。
+- 密码重置成功后撤销该账号的全部刷新会话，并使其他未使用的重置码失效。
 - 标签 JSON 和资源 MIME 类型必须在服务端校验。
 - 日志不得记录密码、Token、完整标签内容和用户上传的图片数据。
 - 数据库和对象存储需要定期备份，并实际验证恢复流程。
-- 注销账号属于后续可见功能，但数据模型需要支持冻结和延迟删除。
+- 已提供账号注销入口：立即冻结账号并撤销会话，数据在 14 天宽限期后由维护任务物理删除。
 
 ## 12. 错误码
 
@@ -949,8 +958,8 @@ PC 端使用 Tauri 2 官方 updater 插件：
 
 建议保留两个用途：
 
-- 离线完整安装包：继续供公司内网、无网环境或人工安装使用，可以包含 WebView2 离线安装程序。
-- 在线更新包：供已经安装软件的电脑使用，不重复包含大型离线运行时。
+- 默认公开安装包和在线更新包：使用 `downloadBootstrapper`，不再内置 WebView2 离线安装程序。电脑已有 WebView2 时不会重复下载；缺少时由安装程序联网获取运行时。
+- 如未来确有完全断网的部署需求，再单独构建并标注为“离线专用”的安装包；它不作为默认发布包。
 
 公开下载页也可以另外提供较小的在线安装包。在线安装包使用 `downloadBootstrapper`，只在电脑缺少 WebView2 时下载运行时。
 
@@ -1160,5 +1169,5 @@ CREATE TABLE desktop_releases (
 | 付费模板 | 完整内容保存在服务端，服务端鉴权 |
 | PC 自动更新 | Tauri 2 官方 updater + 自建动态更新 API |
 | 第一版更新方式 | 签名的完整 updater 产物，不做自定义差分 |
-| WebView2 | 离线安装包用于初装，在线引导方式用于 updater |
+| WebView2 | 默认使用在线引导方式，不在公开安装包或 updater 包中内置离线运行时 |
 | 增量更新 | 根据实际更新包大小和流量数据后续单独立项 |

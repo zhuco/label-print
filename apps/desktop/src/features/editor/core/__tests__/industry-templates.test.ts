@@ -8,7 +8,10 @@ describe("industry templates", () => {
     expect(ids.has("food-label")).toBe(true);
     expect(ids.has("apparel-tag")).toBe(true);
     expect(ids.has("logistics-waybill")).toBe(true);
-    expect(ids.has("food-info-nutrition-ddl")).toBe(true);
+    expect(ids.has("retail-price")).toBe(true);
+    expect(ids.has("food-info-nutrition-ddl")).toBe(false);
+    expect(ids.has("medical-tag")).toBe(false);
+    expect(ids.has("asset-tag")).toBe(false);
   });
 
   it("can build a ready-to-use element list from a template id", () => {
@@ -27,7 +30,7 @@ describe("industry templates", () => {
 
   it("fits a template to the current canvas and keeps every item editable", () => {
     const labelSize = { widthMm: 25, heightMm: 20 };
-    const elements = buildIndustryTemplateElements("asset-tag", labelSize, (type) => `${type}-fit`);
+    const elements = buildIndustryTemplateElements("retail-price", labelSize, (type) => `${type}-fit`);
 
     expect(elements.length).toBeGreaterThan(0);
     for (const element of elements) {
@@ -65,33 +68,9 @@ describe("industry templates", () => {
     expect(getIndustryTemplate("missing-template")).toBeNull();
   });
 
-  it("builds a dual-panel food template from ddl source layout", () => {
-    const elements = buildIndustryTemplateElements(
-      "food-info-nutrition-ddl",
-      {
-        widthMm: 60,
-        heightMm: 40,
-      },
-      (type) => `${type}-ddl`
-    );
-
-    expect(elements.length).toBeGreaterThanOrEqual(4);
-    expect(elements.some((element) => element.type === "shape")).toBe(true);
-    expect(
-      elements.some(
-        (element) =>
-          element.type === "text" &&
-          element.binding.mode === "fixed" &&
-          element.binding.fixedValue?.includes("营养成分表")
-      )
-    ).toBe(true);
-    expect(
-      elements.some(
-        (element) =>
-          element.type === "text" &&
-          element.binding.mode === "fixed" &&
-          element.binding.fixedValue?.includes("品名:芝麻花生牛皮糖")
-      )
-    ).toBe(true);
+  it("does not expose paid template identifiers to the offline builder", () => {
+    expect(buildIndustryTemplateElements("food-info-nutrition-ddl", { widthMm: 60, heightMm: 40 }, () => "blocked")).toEqual([]);
+    expect(buildIndustryTemplateElements("medical-tag", { widthMm: 60, heightMm: 40 }, () => "blocked")).toEqual([]);
+    expect(buildIndustryTemplateElements("asset-tag", { widthMm: 60, heightMm: 40 }, () => "blocked")).toEqual([]);
   });
 });

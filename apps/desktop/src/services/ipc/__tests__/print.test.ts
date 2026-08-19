@@ -6,7 +6,7 @@ vi.mock("@tauri-apps/api/core", () => ({
   invoke: (...args: unknown[]) => invokeMock(...args),
 }));
 
-import { getCachedSystemPrinters, listSystemPrinters } from "../print";
+import { getCachedSystemPrinters, listSystemPrinters, revealPdfOutput, submitDirectPrint } from "../print";
 
 describe("print ipc", () => {
   beforeEach(() => {
@@ -71,5 +71,35 @@ describe("print ipc", () => {
 
     await expect(first).resolves.toEqual(["Printer-A"]);
     await expect(second).resolves.toEqual(["Printer-A"]);
+  });
+
+  it("sends every rendered record image to the native direct-print command", async () => {
+    invokeMock.mockResolvedValueOnce({ jobId: 9, outputPath: null });
+
+    await expect(submitDirectPrint({
+      templateId: 1,
+      totalItems: 2,
+      printerId: "Printer-A",
+      copies: 3,
+      calibrationJson: "{}",
+      payloadJson: "{}",
+      previewPngBase64s: ["first", "second"],
+      widthMm: 40,
+      heightMm: 30,
+      title: "批量标签",
+    })).resolves.toEqual({ jobId: 9, outputPath: null });
+
+    expect(invokeMock).toHaveBeenCalledWith("submit_direct_print", {
+      payload: expect.objectContaining({ preview_png_base64s: ["first", "second"] }),
+    });
+  });
+
+  it("opens Explorer with the generated PDF selected", async () => {
+    invokeMock.mockResolvedValueOnce(undefined);
+
+    await expect(revealPdfOutput("C:/Users/test/Documents/LabelPrint-PDF/food-label.pdf")).resolves.toBeUndefined();
+    expect(invokeMock).toHaveBeenCalledWith("reveal_pdf_output", {
+      path: "C:/Users/test/Documents/LabelPrint-PDF/food-label.pdf",
+    });
   });
 });

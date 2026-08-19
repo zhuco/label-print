@@ -1,0 +1,16 @@
+[Unit]
+Description=Label Cloud PostgreSQL and MinIO backup
+Requires=docker.service
+After=docker.service network-online.target
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+User=root
+WorkingDirectory=/opt/label-cloud
+ExecStart=/opt/label-cloud/backup-cloud.sh
+TimeoutStartSec=45min
+Nice=19
+IOSchedulingClass=idle
+IOSchedulingPriority=7
+CPUQuota=25%

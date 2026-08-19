@@ -29,6 +29,20 @@ pub struct SaveTemplateFileResult {
     pub file_name: String,
 }
 
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct PickTemplateSavePathPayload {
+    pub suggested_name: String,
+}
+
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct PickTemplateSavePathResult {
+    pub file_name: String,
+    pub file_path: String,
+    pub replacing_existing: bool,
+}
+
 #[derive(Debug, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct OpenTemplateFileResult {
@@ -92,6 +106,41 @@ pub fn save_template_file(payload: SaveTemplateFilePayload) -> Result<SaveTempla
         .unwrap_or_else(|| "label-template.lpt".to_string());
 
     Ok(SaveTemplateFileResult { file_name })
+}
+
+#[tauri::command]
+pub fn pick_template_save_path(
+    payload: PickTemplateSavePathPayload,
+) -> Result<Option<PickTemplateSavePathResult>, String> {
+    let suggested_name = payload.suggested_name.trim();
+    let safe_suggested_name = if suggested_name.is_empty() {
+        "label-template.lpt"
+    } else {
+        suggested_name
+    };
+
+    let Some(path) = rfd::FileDialog::new()
+        .set_title("保存标签")
+        .set_file_name(safe_suggested_name)
+        .add_filter("标签模板", &["lpt"])
+        .save_file()
+    else {
+        return Ok(None);
+    };
+
+    let replacing_existing = path.exists();
+    let file_name = path
+        .file_name()
+        .and_then(|value| value.to_str())
+        .map(str::to_string)
+        .unwrap_or_else(|| "label-template.lpt".to_string());
+    let file_path = path.to_string_lossy().into_owned();
+
+    Ok(Some(PickTemplateSavePathResult {
+        file_name,
+        file_path,
+        replacing_existing,
+    }))
 }
 
 #[tauri::command]

@@ -1,0 +1,21 @@
+# Append this snippet to /etc/caddy/Caddyfile. Caddy provisions and renews the
+# API HTTPS certificate; signed MinIO paths share that same origin.
+
+api1.hengceyun.com {
+	encode zstd gzip
+
+	@api path /api/* /healthz /metrics
+	handle @api {
+		reverse_proxy 127.0.0.1:8787
+	}
+
+	# Signed Tauri installers and updater artifacts are public download files.
+	handle_path /downloads/* {
+		root * /var/www/label-cloud/releases
+		file_server
+	}
+
+	# MinIO validates the original signed request. Do not use handle_path or
+	# rewrite this path, or AWS Signature V4 validation will fail.
+	reverse_proxy 127.0.0.1:9000
+}

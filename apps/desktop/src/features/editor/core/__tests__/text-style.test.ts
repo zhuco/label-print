@@ -1,6 +1,6 @@
 ﻿import { describe, expect, it } from "vitest";
 
-import { buildTextDecoration, computeSingleLineScaleX } from "../text-style";
+import { buildTextDecoration, computeSingleLineScaleX, computeTextFitScale } from "../text-style";
 import type { TextStyle } from "../types";
 
 describe("buildTextDecoration", () => {
@@ -70,5 +70,39 @@ describe("computeSingleLineScaleX", () => {
     });
 
     expect(scale).toBeCloseTo(0.58, 4);
+  });
+
+  it("fits text vertically when the element height is compressed", () => {
+    const scale = computeTextFitScale({
+      text: "商品名称",
+      textStyle: baseStyle,
+      widthMm: 60,
+      heightMm: 2,
+      mmToPx: 8,
+    });
+
+    expect(scale.scaleX).toBe(1);
+    expect(scale.scaleY).toBeLessThan(1);
+    expect(scale.scaleY).toBeGreaterThan(0);
+  });
+
+  it("accounts for wrapped lines when fitting text height", () => {
+    const narrowScale = computeTextFitScale({
+      text: "这是一段需要自动换行的较长文本",
+      textStyle: { ...baseStyle, wrapMode: "auto" },
+      widthMm: 8,
+      heightMm: 5,
+      mmToPx: 8,
+    });
+    const wideScale = computeTextFitScale({
+      text: "这是一段需要自动换行的较长文本",
+      textStyle: { ...baseStyle, wrapMode: "auto" },
+      widthMm: 80,
+      heightMm: 5,
+      mmToPx: 8,
+    });
+
+    expect(narrowScale.scaleX).toBe(1);
+    expect(narrowScale.scaleY).toBeLessThan(wideScale.scaleY);
   });
 });

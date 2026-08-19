@@ -8,10 +8,14 @@
 
 - Windows x64 桌面运行
 - 基于系统驱动的热敏打印
-- CSV / Excel 批量导入与打印
+- CSV / Excel 批量导入、字段绑定与逐行可变数据打印
 - 标签模板编辑（画布、元素、属性面板）
 - 打印队列与基础校准能力
 - 1366x768 到 4K 的响应式界面适配
+- 个人云空间：注册登录、默认保持登录、云标签、回收站、离线缓存与自动重试
+- 免费版 50 个 / 专业版 200 个标签配额，以及服务端受控的专业官方模板
+
+第一版各项能力的准确状态、用户入口和代码入口见[文档导航与第一版功能状态](docs/README.md)；尚未完成的功能和发布验收项见[第一版待实现与发布验收](docs/v1-pending-implementation.md)。
 
 ## 2. 技术栈
 
@@ -47,6 +51,14 @@ pnpm --filter @label/desktop dev
 pnpm --filter @label/desktop tauri:dev
 ```
 
+### 4.4 启动本地个人云 API（可选）
+
+```powershell
+powershell -ExecutionPolicy Bypass -File .\scripts\start-local-cloud-api.ps1
+```
+
+本机测试帐号为 `3776878@qq.com`，密码为 `123456`，专业版有效至 2027-08-05。账号数据仅保存在被 Git 忽略的 `var/` 目录；公网部署和邮件、对象存储、备份配置见 [云 API 运行说明](apps/server/README.md)。
+
 ## 5. 常用命令
 
 ### 5.1 根目录脚本
@@ -54,7 +66,7 @@ pnpm --filter @label/desktop tauri:dev
 - `pnpm test`：运行工作区测试（包含 e2e）
 - `pnpm lint`：运行工作区静态检查与乱码检查
 - `pnpm check:mojibake`：执行文本乱码/编码检查
-- `pnpm build-installer`：构建 Windows 安装包（PowerShell 脚本）
+- `powershell -ExecutionPolicy Bypass -File .\scripts\build-tauri-msi.ps1 -UpdaterPublicKey "<public key>" -NoPause`：构建 Windows 安装包；默认使用正式云端 API `https://api1.hengceyun.com`。如需测试环境，可显式传入 `-CloudApiBaseUrl`。
 - `pnpm hooks:enable`：启用仓库内 Git Hooks（设置 `core.hooksPath`）
 
 ### 5.2 子项目常用命令
@@ -80,6 +92,8 @@ cargo test --manifest-path apps/desktop/src-tauri/Cargo.toml
 ### 6.1 顶层目录
 
 - `apps/desktop/`：桌面应用主工程（React + Tauri）
+- `apps/server/`：个人云 API、数据库迁移和本地 Docker 部署配置
+- `packages/api-contract/`：桌面端与云 API 的公开协议类型
 - `packages/data-import/`：CSV/Excel 解析、字段映射、预览等能力
 - `packages/template-schema/`：模板结构定义、校验与迁移
 - `tests/e2e/`：Playwright 端到端测试
@@ -124,7 +138,8 @@ pnpm --filter @label/e2e test
 
 - 当前打印后端仅支持 Windows 驱动链路。
 - 暂未实现原生打印指令语言（如 ZPL/TSPL）。
-- 暂不包含多用户/云端同步能力。
+- 个人云空间仅支持个人帐号；不支持团队、共享、协作和移动端。
+- 公网发布仍需自行配置 HTTPS 域名、PostgreSQL、S3 兼容对象存储、SMTP 服务和支付渠道适配器；这些密钥不应写入仓库或桌面安装包。
 
 ## 9. License
 

@@ -49,4 +49,22 @@ describe("打印任务载荷", () => {
     expect(textPayload?.textStyle.wrapMode).toBe("singleLine");
     expect(textPayload?.textStyle.widthScale).toBeCloseTo(0.62, 2);
   });
+
+  it("uses one supplied timestamp for print-time elements", () => {
+    const payload = buildPrintSubmitPayload({
+      templateId: 1,
+      templateVersion: 2,
+      labelSize: { widthMm: 40, heightMm: 30 },
+      printerId: "Zebra-01",
+      elements: [
+        createTextElement({
+          id: "date",
+          binding: { mode: "datetime", dateTimeSource: "printTime", dateTimeFormat: "YYYY-MM-DD" },
+        }),
+      ],
+      records: [{}],
+    });
+
+    expect(payload.elements[0]?.content).toMatch(/^\d{4}-\d{2}-\d{2}$/);
+  });
 });

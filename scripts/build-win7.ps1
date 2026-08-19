@@ -1,4 +1,6 @@
 Param(
+    [ValidatePattern('^https://')]
+    [string]$CloudApiBaseUrl = 'https://api1.hengceyun.com',
     [switch]$SkipFrontend,
     [switch]$BundleNsis,
     [switch]$KeepStaging
@@ -6,6 +8,11 @@ Param(
 
 Set-StrictMode -Version Latest
 $ErrorActionPreference = "Stop"
+
+# Keep the Win7 installer on the same production cloud API as the normal MSI.
+# An explicit -CloudApiBaseUrl may still be supplied for staging or testing.
+$previousCloudApiUrl = [Environment]::GetEnvironmentVariable('VITE_LABEL_API_URL', 'Process')
+$env:VITE_LABEL_API_URL = $CloudApiBaseUrl.TrimEnd('/')
 
 function Invoke-External {
     Param(
@@ -76,6 +83,11 @@ $stageDist = Join-Path $stageRoot "apps\desktop\dist"
 $manifest = Join-Path $stageTauri "Cargo.toml"
 $targetExe = Join-Path $outputRoot "release\label-desktop.exe"
 $installerOutput = Join-Path $releaseDir "label-desktop_${safeVersion}_win7_x64.exe"
+$sourceBuildTargets = @(
+    Get-ChildItem -LiteralPath $sourceTauri -Directory -Force |
+        Where-Object { $_.Name -like "target*" } |
+        Select-Object -ExpandProperty FullName
+)
 
 try {
     if (-not (Get-Command rustup -ErrorAction SilentlyContinue)) {
@@ -119,10 +131,10 @@ try {
     }
 
     Write-Host "Creating isolated Win7 staging workspace..."
-    Copy-Tree -Source $sourceTauri -Destination $stageTauri -ExcludedDirectories @(
-        (Join-Path $sourceTauri "target"),
-        (Join-Path $sourceTauri "target-win7")
-    )
+    # Do not stage any existing Rust build cache. Besides wasting substantial
+    # time and disk space, files in a copied target-* tree may disappear while
+    # Cargo is working, which can make final staging cleanup fail.
+    Copy-Tree -Source $sourceTauri -Destination $stageTauri -ExcludedDirectories $sourceBuildTargets
     Copy-Tree -Source $sourceDist -Destination $stageDist
 
     $mainLock = Join-Path $stageTauri "Cargo.lock"
@@ -141,11 +153,12 @@ try {
         [IO.File]::WriteAllText($manifest, $manifestContent, (New-Object Text.UTF8Encoding($false)))
     }
 
-    # These versions are verified together with Rust 1.77.2. They only affect
-    # the staged Win7 build; the main Cargo.toml and Cargo.lock remain untouched.
-    Set-DependencyVersion -Manifest $manifest -Dependency "tauri-build" -Version "2.6.3"
-    Set-DependencyVersion -Manifest $manifest -Dependency "tauri" -Version "2.11.5"
-    Set-DependencyVersion -Manifest $manifest -Dependency "tauri-plugin-single-instance" -Version "2.4.3"
+    # Keep the Rust crates in the same Tauri minor release as the bundled CLI
+    # and JavaScript API. These pins only affect the staged Win7 build; the
+    # main Cargo.toml and Cargo.lock remain untouched.
+    Set-DependencyVersion -Manifest $manifest -Dependency "tauri-build" -Version "2.5.6"
+    Set-DependencyVersion -Manifest $manifest -Dependency "tauri" -Version "2.10.3"
+    Set-DependencyVersion -Manifest $manifest -Dependency "tauri-plugin-single-instance" -Version "2.4.1"
     Set-DependencyVersion -Manifest $manifest -Dependency "tauri-plugin-window-state" -Version "2.4.1"
     Set-DependencyVersion -Manifest $manifest -Dependency "image" -Version "0.25.6"
     Set-DependencyVersion -Manifest $manifest -Dependency "printpdf" -Version "0.8.2"
@@ -165,6 +178,21 @@ try {
     $env:CARGO_RESOLVER_INCOMPATIBLE_RUST_VERSIONS = "fallback"
     try {
         Invoke-External -FilePath "cargo" -Arguments @("generate-lockfile", "--manifest-path", $manifest)
+        # `tauri` permits newer same-major runtime crates, but those revisions
+        # can change internal types and are rejected by the 2.10 JavaScript
+        # CLI. Pin the coordinated runtime family in staging before compiling.
+        foreach ($dependency in @(
+            @("tauri-macros", "2.5.5"),
+            @("tauri-codegen", "2.5.5"),
+            @("tauri-plugin", "2.5.4"),
+            @("tauri-runtime-wry", "2.10.1"),
+            @("tauri-runtime", "2.10.1"),
+            @("tauri-utils", "2.8.3")
+        )) {
+            Invoke-External -FilePath "cargo" -Arguments @(
+                "update", "-p", $dependency[0], "--precise", $dependency[1], "--manifest-path", $manifest
+            )
+        }
         Invoke-External -FilePath "cargo" -Arguments @("fetch", "--manifest-path", $manifest)
     } finally {
         $env:CARGO_RESOLVER_INCOMPATIBLE_RUST_VERSIONS = $previousResolverPolicy
@@ -211,6 +239,20 @@ try {
     $env:CARGO_RESOLVER_INCOMPATIBLE_RUST_VERSIONS = "fallback"
     try {
         Invoke-External -FilePath "cargo" -Arguments @("generate-lockfile", "--manifest-path", $manifest)
+        # The vendor patch regenerates Cargo.lock, so apply the same runtime
+        # pins again after that final resolution.
+        foreach ($dependency in @(
+            @("tauri-macros", "2.5.5"),
+            @("tauri-codegen", "2.5.5"),
+            @("tauri-plugin", "2.5.4"),
+            @("tauri-runtime-wry", "2.10.1"),
+            @("tauri-runtime", "2.10.1"),
+            @("tauri-utils", "2.8.3")
+        )) {
+            Invoke-External -FilePath "cargo" -Arguments @(
+                "update", "-p", $dependency[0], "--precise", $dependency[1], "--manifest-path", $manifest
+            )
+        }
     } finally {
         $env:CARGO_RESOLVER_INCOMPATIBLE_RUST_VERSIONS = $previousResolverPolicy
     }

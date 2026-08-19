@@ -17,6 +17,7 @@ import type {
   TextElement,
   TextStyle,
 } from "./types";
+import { DEFAULT_DATE_TIME_FORMAT } from "./binding";
 
 const DEFAULT_TEXT_STYLE: TextStyle = {
   fontFamily: "Microsoft YaHei",
@@ -96,6 +97,26 @@ export function createTextElement(init: BaseInit): TextElement {
     ...base,
     type: "text",
     name: init.name ?? "文本",
+  };
+}
+
+export function createDateTimeElement(init: BaseInit): TextElement {
+  const base = createBase({
+    ...init,
+    widthMm: init.widthMm ?? 28,
+    heightMm: init.heightMm ?? 6,
+    binding:
+      init.binding ??
+      ({
+        mode: "datetime",
+        dateTimeSource: "printTime",
+        dateTimeFormat: DEFAULT_DATE_TIME_FORMAT,
+      } satisfies ContentBinding),
+  });
+  return {
+    ...base,
+    type: "text",
+    name: init.name ?? "日期时间",
   };
 }
 

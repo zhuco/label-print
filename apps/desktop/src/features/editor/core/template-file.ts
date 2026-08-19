@@ -382,7 +382,7 @@ export function parseDdlTemplateSnapshot(content: string, fallbackName: string):
     if (itemType === "5") {
       const textElement = createTextElement({
         id: `ddl-text-${index + 1}`,
-        name: `Text ${index + 1}`,
+        name: `文本 ${index + 1}`,
         xMm,
         yMm,
         widthMm,
@@ -421,7 +421,7 @@ export function parseDdlTemplateSnapshot(content: string, fallbackName: string):
     if (itemType === "7") {
       const barcodeElement = createBarcodeElement({
         id: `ddl-barcode-${index + 1}`,
-        name: `Barcode ${index + 1}`,
+        name: `条码 ${index + 1}`,
         xMm,
         yMm,
         widthMm,

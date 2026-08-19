@@ -1,2 +1,28 @@
-.githooks/* text eol=lf
-scripts/*.mjs text eol=lf
+# Keep all source and configuration text in UTF-8 with LF line endings.
+# Git validates the declared working-tree encoding during add/checkout, which
+# prevents a file saved as GBK or UTF-16 from silently entering the repository.
+*.ts text eol=lf working-tree-encoding=UTF-8
+*.tsx text eol=lf working-tree-encoding=UTF-8
+*.js text eol=lf working-tree-encoding=UTF-8
+*.jsx text eol=lf working-tree-encoding=UTF-8
+*.mjs text eol=lf working-tree-encoding=UTF-8
+*.cjs text eol=lf working-tree-encoding=UTF-8
+*.css text eol=lf working-tree-encoding=UTF-8
+*.scss text eol=lf working-tree-encoding=UTF-8
+*.html text eol=lf working-tree-encoding=UTF-8
+*.json text eol=lf working-tree-encoding=UTF-8
+*.yml text eol=lf working-tree-encoding=UTF-8
+*.yaml text eol=lf working-tree-encoding=UTF-8
+*.toml text eol=lf working-tree-encoding=UTF-8
+*.md text eol=lf working-tree-encoding=UTF-8
+*.txt text eol=lf working-tree-encoding=UTF-8
+*.xml text eol=lf working-tree-encoding=UTF-8
+*.ini text eol=lf working-tree-encoding=UTF-8
+*.conf text eol=lf working-tree-encoding=UTF-8
+*.svg text eol=lf working-tree-encoding=UTF-8
+*.rs text eol=lf working-tree-encoding=UTF-8
+*.ps1 text eol=crlf working-tree-encoding=UTF-8
+.editorconfig text eol=lf working-tree-encoding=UTF-8
+.gitattributes text eol=lf working-tree-encoding=UTF-8
+.gitignore text eol=lf working-tree-encoding=UTF-8
+.githooks/* text eol=lf working-tree-encoding=UTF-8

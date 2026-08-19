@@ -6,6 +6,10 @@ or lock file.
 
 Run from the repository root:
 
+The release build scripts default to the production cloud API:
+`https://api1.hengceyun.com`. Override it only for staging/testing with
+`-CloudApiBaseUrl`.
+
 ```powershell
 pnpm build:win7
 ```

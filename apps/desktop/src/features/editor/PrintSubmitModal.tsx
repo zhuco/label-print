@@ -1,21 +1,27 @@
-import { toPng } from "html-to-image";
+import { getFontEmbedCSS, toPng } from "html-to-image";
 import { useCallback, useEffect, useRef, useState, type CSSProperties } from "react";
+import { flushSync } from "react-dom";
 
 import { BarcodePreview } from "./BarcodePreview";
 import { QrcodePreview } from "./QrcodePreview";
 import { resolveBindingValue } from "./core/binding";
 import { buildBarcodeTextStyle } from "./core/barcode-text-style";
-import { buildTextDecoration, computeSingleLineScaleX } from "./core/text-style";
+import { buildTextDecoration, computeTextFitScale } from "./core/text-style";
 import type { EditorElement, LabelSize, TextStyle } from "./core/types";
 import { normalizeVisualDashArray, normalizeVisualStrokeWidth, toAlphaColor, toShapeBorderWidthPx } from "./core/visual-style";
 import { PresetGlyph, readIconPresetIdFromBinding, readShapePresetIdFromBinding } from "./core/visual-presets";
+
+// A 300 DPI source works with both 203/205 DPI and 300 DPI thermal printers.
+// The printer driver performs its normal downsampling when its native
+// resolution is lower, without making label rendering depend on display DPI.
+const PRINT_RENDER_DPI = 300;
 
 export type DirectPrintSubmitInput = {
   printerId: string;
   copies: number;
   widthMm: number;
   heightMm: number;
-  previewPngBase64: string;
+  previewPngBase64s: string[];
 };
 
 type PrintSubmitModalProps = {
@@ -27,7 +33,7 @@ type PrintSubmitModalProps = {
   printerId: string;
   copies: number;
   elements: EditorElement[];
-  previewRecord: Record<string, string>;
+  printRecords: Record<string, string>[];
   submitStatus: string;
   submitting: boolean;
   loadingPrinters: boolean;
@@ -47,7 +53,7 @@ export function PrintSubmitModal({
   printerId,
   copies,
   elements,
-  previewRecord,
+  printRecords,
   submitStatus,
   submitting,
   loadingPrinters,
@@ -60,11 +66,16 @@ export function PrintSubmitModal({
   const previewSurfaceRef = useRef<HTMLDivElement | null>(null);
   const copiesInputRef = useRef<HTMLInputElement | null>(null);
   const [previewMmToPx, setPreviewMmToPx] = useState(8);
+  const [captureRecordIndex, setCaptureRecordIndex] = useState(0);
+  const [capturing, setCapturing] = useState(false);
+  const [printTimestamp, setPrintTimestamp] = useState<Date | null>(null);
   const previewWidthMm = Math.max(10, labelSize.widthMm);
   const previewHeightMm = Math.max(10, labelSize.heightMm);
+  const records = printRecords.length > 0 ? printRecords : [{}];
+  const previewRecord = records[captureRecordIndex] ?? {};
   const statusClass = submitStatus.includes("失败") ? "warning" : "muted";
 
-  const capturePreviewPngBase64 = useCallback(async (): Promise<string> => {
+  const capturePreviewPngBase64 = useCallback(async (fontEmbedCSS: string | undefined): Promise<string> => {
     const target = previewSurfaceRef.current;
     if (!target) {
       throw new Error("预览区域不存在。");
@@ -75,9 +86,15 @@ export function PrintSubmitModal({
     let dataUrl = "";
     try {
       dataUrl = await toPng(target, {
-        cacheBust: true,
+        cacheBust: false,
         backgroundColor: "#ffffff",
-        pixelRatio: 2,
+        // The visible preview is responsive. Capturing its native size makes
+        // the same label print differently after a window resize, so retain
+        // its layout while rasterizing to a fixed physical label resolution.
+        canvasWidth: mmToPrintPixels(previewWidthMm),
+        canvasHeight: mmToPrintPixels(previewHeightMm),
+        fontEmbedCSS,
+        pixelRatio: 1,
       });
     } finally {
       target.classList.remove(captureClassName);
@@ -88,21 +105,50 @@ export function PrintSubmitModal({
       throw new Error("预览图生成失败。");
     }
     return dataUrl.slice(markerIndex + marker.length);
-  }, []);
+  }, [previewHeightMm, previewWidthMm]);
+
+  const captureRecordPreview = useCallback(async (
+    recordIndex: number,
+    fontEmbedCSS: string | undefined
+  ): Promise<string> => {
+    // A synchronous commit guarantees that html-to-image captures the bindings for this
+    // exact record, rather than the previous preview frame.
+    flushSync(() => setCaptureRecordIndex(recordIndex));
+    return capturePreviewPngBase64(fontEmbedCSS);
+  }, [capturePreviewPngBase64]);
 
   const handleSubmit = useCallback(async () => {
-    if (submitting) {
+    if (submitting || capturing) {
       return;
     }
-    const previewPngBase64 = await capturePreviewPngBase64();
-    await onConfirm({
-      printerId,
-      copies: Math.max(1, Math.trunc(copies)),
-      widthMm: previewWidthMm,
-      heightMm: previewHeightMm,
-      previewPngBase64,
-    });
-  }, [capturePreviewPngBase64, copies, onConfirm, previewHeightMm, previewWidthMm, printerId, submitting]);
+    // Commit the busy state before html-to-image begins its CPU-heavy DOM walk,
+    // so the print click always receives immediate visual feedback.
+    flushSync(() => setCapturing(true));
+    try {
+      // Freeze this once so every label in the submitted batch has the exact same print time.
+      const timestamp = new Date();
+      flushSync(() => setPrintTimestamp(timestamp));
+      const fontEmbedCSS = await resolvePrintFontEmbedCSS(previewSurfaceRef.current);
+      const previewPngBase64s: string[] = [];
+      for (let index = 0; index < records.length; index += 1) {
+        previewPngBase64s.push(await captureRecordPreview(index, fontEmbedCSS));
+      }
+      const submitted = await onConfirm({
+        printerId,
+        copies: Math.max(1, Math.trunc(copies)),
+        widthMm: previewWidthMm,
+        heightMm: previewHeightMm,
+        previewPngBase64s,
+      });
+      if (submitted) {
+        onClose();
+      }
+    } finally {
+      flushSync(() => setCaptureRecordIndex(0));
+      setPrintTimestamp(null);
+      setCapturing(false);
+    }
+  }, [captureRecordPreview, capturing, copies, onConfirm, previewHeightMm, previewWidthMm, printerId, records, submitting]);
 
   useEffect(() => {
     if (!open) {
@@ -116,7 +162,7 @@ export function PrintSubmitModal({
         return;
       }
 
-      if (event.key === "Enter" && !event.isComposing && !submitting) {
+      if (event.key === "Enter" && !event.isComposing && !submitting && !capturing) {
         event.preventDefault();
         void handleSubmit();
       }
@@ -124,7 +170,7 @@ export function PrintSubmitModal({
 
     window.addEventListener("keydown", onKeyDown);
     return () => window.removeEventListener("keydown", onKeyDown);
-  }, [handleSubmit, onClose, open, submitting]);
+  }, [capturing, handleSubmit, onClose, open, submitting]);
 
   useEffect(() => {
     if (!open) {
@@ -194,7 +240,6 @@ export function PrintSubmitModal({
         <header className="modal-header print-modal-header">
           <div className="print-modal-title-group">
             <h3>提交打印任务</h3>
-            <p className="muted">工业任务面板 · 系统打印机直连输出</p>
           </div>
           <button type="button" onClick={onClose} aria-label="关闭打印窗口">
             ×
@@ -225,7 +270,7 @@ export function PrintSubmitModal({
                   type="button"
                   className="tool-ghost"
                   onClick={onRefreshPrinters}
-                  disabled={submitting || loadingPrinters}
+                  disabled={submitting || capturing || loadingPrinters}
                 >
                   {loadingPrinters ? "刷新中..." : "刷新系统打印机"}
                 </button>
@@ -259,11 +304,11 @@ export function PrintSubmitModal({
                   type="button"
                   className="primary print-submit-btn"
                   onClick={() => void handleSubmit()}
-                  disabled={submitting}
+                  disabled={submitting || capturing}
                 >
-                  {submitting ? "打印中..." : "打印"}
+                  {capturing ? `生成第 ${captureRecordIndex + 1}/${records.length} 条打印图...` : submitting ? "打印中..." : "打印"}
                 </button>
-                <button type="button" className="tool-ghost print-cancel-btn" onClick={onClose} disabled={submitting}>
+                <button type="button" className="tool-ghost print-cancel-btn" onClick={onClose} disabled={submitting || capturing}>
                   取消
                 </button>
               </div>
@@ -276,6 +321,7 @@ export function PrintSubmitModal({
               <h4>实时预览</h4>
               <p className="muted">
                 模板：{title} · 尺寸：{previewWidthMm} × {previewHeightMm} mm
+                {records.length > 1 ? ` · 数据 ${captureRecordIndex + 1}/${records.length}` : ""}
               </p>
             </header>
 
@@ -291,7 +337,9 @@ export function PrintSubmitModal({
               >
                 <div className="print-preview-canvas">
                   {elements.map((element) => {
-                    const previewValue = resolveBindingValue(element.binding, previewRecord);
+                    const previewValue = resolveBindingValue(element.binding, previewRecord, {
+                      now: printTimestamp ?? new Date(),
+                    });
                     const elementStyle: CSSProperties = {
                       left: `${toPercent(element.xMm, previewWidthMm)}%`,
                       top: `${toPercent(element.yMm, previewHeightMm)}%`,
@@ -302,15 +350,13 @@ export function PrintSubmitModal({
 
                     if (element.type === "text") {
                       const wrapMode = element.textStyle.wrapMode ?? "auto";
-                      const scaleX =
-                        wrapMode === "singleLine"
-                          ? computeSingleLineScaleX({
-                              text: previewValue,
-                              textStyle: element.textStyle,
-                              widthMm: element.widthMm,
-                              mmToPx: previewMmToPx,
-                            })
-                          : 1;
+                      const textFitScale = computeTextFitScale({
+                        text: previewValue,
+                        textStyle: element.textStyle,
+                        widthMm: element.widthMm,
+                        heightMm: element.heightMm,
+                        mmToPx: previewMmToPx,
+                      });
                       return (
                         <div key={element.id} className="print-preview-element print-preview-text" style={elementStyle}>
                           <div
@@ -329,14 +375,25 @@ export function PrintSubmitModal({
                               overflowWrap: wrapMode === "singleLine" ? "normal" : "anywhere",
                               wordBreak: wrapMode === "singleLine" ? "normal" : "break-word",
                               textOverflow: "clip",
-                              transform: wrapMode === "singleLine" ? `scaleX(${scaleX})` : undefined,
-                              transformOrigin:
-                                wrapMode === "singleLine"
-                                  ? `${getAlignTransformOrigin(element.textStyle.align)} center`
-                                  : undefined,
+                              justifyContent:
+                                element.textStyle.align === "center"
+                                  ? "center"
+                                  : element.textStyle.align === "right"
+                                    ? "flex-end"
+                                    : "flex-start",
                             }}
                           >
-                            {previewValue}
+                            <span
+                              className={`element-content-text ${
+                                wrapMode === "singleLine" ? "is-single-line" : "is-auto-wrap"
+                              }`}
+                              style={{
+                                transform: `scale(${textFitScale.scaleX}, ${textFitScale.scaleY})`,
+                                transformOrigin: `${getAlignTransformOrigin(element.textStyle.align)} center`,
+                              }}
+                            >
+                              {previewValue}
+                            </span>
                           </div>
                         </div>
                       );
@@ -438,12 +495,40 @@ export function PrintSubmitModal({
                       const shapePresetId =
                         element.binding.mode === "fixed" ? readShapePresetIdFromBinding(element.binding.fixedValue) : null;
 
+                      // html-to-image does not consistently preserve SVG's
+                      // non-scaling-stroke rule. Its exported rectangles can
+                      // therefore gain a wide outline that covers nearby
+                      // text. Render the common label-frame shapes as CSS so
+                      // their border width matches the on-screen preview.
+                      if (shapePresetId === "rectangle" || shapePresetId === "rounded-rectangle") {
+                        return (
+                          <div
+                            key={element.id}
+                            className="print-preview-element print-preview-shape print-preview-preset print-preview-css-shape"
+                            style={{
+                              ...shapeStyle,
+                              // The matching SVG presets have fill="none". Keep that
+                              // transparent interior when exporting with CSS borders;
+                              // otherwise the generic shape fill turns table frames blue.
+                              backgroundColor: "transparent",
+                              borderRadius: shapePresetId === "rounded-rectangle" ? "4px" : "0",
+                            }}
+                          />
+                        );
+                      }
+
                       if (shapePresetId) {
                         return (
                           <div
                             key={element.id}
                             className="print-preview-element print-preview-shape print-preview-preset"
-                            style={shapeStyle}
+                            style={{
+                              ...elementStyle,
+                              color: strokeColor,
+                              borderWidth: 0,
+                              padding: 0,
+                              background: "transparent",
+                            }}
                           >
                             <PresetGlyph
                               kind="shape"
@@ -555,6 +640,25 @@ function toPercent(value: number, total: number): number {
     return 0;
   }
   return Math.min(100, Math.max(0, (value / total) * 100));
+}
+
+function mmToPrintPixels(mm: number): number {
+  return Math.max(1, Math.round((Math.max(1, mm) / 25.4) * PRINT_RENDER_DPI));
+}
+
+async function resolvePrintFontEmbedCSS(target: HTMLElement | null): Promise<string | undefined> {
+  if (!target) {
+    return undefined;
+  }
+  try {
+    // Font CSS is invariant across the data rows of one job. Supplying it to
+    // every capture avoids re-scanning and re-embedding fonts 1,000 times.
+    return await getFontEmbedCSS(target, { cacheBust: false });
+  } catch {
+    // html-to-image will use its standard path if a browser cannot expose font
+    // rules (for example, a protected system font).
+    return undefined;
+  }
 }
 
 function getAlignTransformOrigin(align: TextStyle["align"]): "left" | "center" | "right" {

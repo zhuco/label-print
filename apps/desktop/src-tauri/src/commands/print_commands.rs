@@ -39,7 +39,7 @@ pub struct DirectPrintPayload {
     pub copies: i64,
     pub calibration_json: String,
     pub payload_json: String,
-    pub preview_png_base64: String,
+    pub preview_png_base64s: Vec<String>,
     pub width_mm: f64,
     pub height_mm: f64,
     pub title: String,
@@ -50,6 +50,31 @@ pub struct DirectPrintPayload {
 pub struct DirectPrintResult {
     pub job_id: i64,
     pub output_path: Option<String>,
+}
+
+#[tauri::command]
+pub fn reveal_pdf_output(path: String) -> Result<(), String> {
+    let file_path = PathBuf::from(path.trim());
+    if !file_path.is_file() {
+        return Err(format!("PDF file does not exist: {}", file_path.display()));
+    }
+
+    #[cfg(target_os = "windows")]
+    {
+        // Explorer's select mode makes the generated file visible immediately,
+        // without opening another application or modifying the PDF.
+        Command::new("explorer.exe")
+            .arg(format!("/select,{}", file_path.display()))
+            .spawn()
+            .map_err(|err| format!("open PDF output folder failed: {err}"))?;
+        Ok(())
+    }
+
+    #[cfg(not(target_os = "windows"))]
+    {
+        let _ = file_path;
+        Err("opening the PDF output folder is only supported on Windows".to_string())
+    }
 }
 
 #[tauri::command]
@@ -249,11 +274,22 @@ pub fn submit_direct_print(
     payload: DirectPrintPayload,
     state: tauri::State<AppState>,
 ) -> Result<DirectPrintResult, String> {
-    let preview_png = base64::engine::general_purpose::STANDARD
-        .decode(payload.preview_png_base64.as_bytes())
-        .map_err(|err| format!("invalid preview image base64: {err}"))?;
-    if preview_png.is_empty() {
-        return Err("empty preview image bytes".to_string());
+    let preview_pngs = payload
+        .preview_png_base64s
+        .iter()
+        .enumerate()
+        .map(|(index, encoded)| {
+            let decoded = base64::engine::general_purpose::STANDARD
+                .decode(encoded.as_bytes())
+                .map_err(|err| format!("invalid preview image base64 for record {}: {err}", index + 1))?;
+            if decoded.is_empty() {
+                return Err(format!("empty preview image bytes for record {}", index + 1));
+            }
+            Ok(decoded)
+        })
+        .collect::<Result<Vec<_>, _>>()?;
+    if preview_pngs.is_empty() {
+        return Err("at least one preview image is required".to_string());
     }
 
     let is_pdf_target = payload.printer_id.to_ascii_lowercase().contains("pdf");
@@ -264,26 +300,22 @@ pub fn submit_direct_print(
     };
 
     if let Some(output_path) = output_pdf_path.as_ref() {
-        export_preview_image_to_pdf(
-            &preview_png,
+        export_preview_images_to_pdf(
+            &preview_pngs,
             output_path,
             payload.width_mm,
             payload.height_mm,
             &payload.title,
+            payload.copies,
         )?;
     } else {
-        let preview_image_path = build_temp_path("label-preview", "png");
-        fs::write(&preview_image_path, &preview_png)
-            .map_err(|err| format!("write preview image failed: {err}"))?;
-        let print_result = print_preview_image(
-            &preview_image_path,
+        print_preview_images(
+            &preview_pngs,
             &payload.printer_id,
             payload.copies,
             payload.width_mm,
             payload.height_mm,
-        );
-        let _ = fs::remove_file(&preview_image_path);
-        print_result?;
+        )?;
     }
 
     let conn = state
@@ -420,8 +452,42 @@ fn build_default_pdf_output_path(title: &str) -> Result<PathBuf, String> {
     Ok(base)
 }
 
-fn print_preview_image(
-    image_path: &Path,
+fn print_preview_images(
+    preview_pngs: &[Vec<u8>],
+    printer_name: &str,
+    copies: i64,
+    width_mm: f64,
+    height_mm: f64,
+) -> Result<(), String> {
+    let mut preview_image_paths = Vec::with_capacity(preview_pngs.len());
+    for (index, preview_png) in preview_pngs.iter().enumerate() {
+        let preview_image_path = build_temp_path(&format!("label-preview-{}", index + 1), "png");
+        if let Err(err) = fs::write(&preview_image_path, preview_png) {
+            for path in preview_image_paths {
+                let _ = fs::remove_file(path);
+            }
+            return Err(format!("write preview image for record {} failed: {err}", index + 1));
+        }
+        preview_image_paths.push(preview_image_path);
+    }
+
+    // Submit the whole batch through one PrintDocument. Starting PowerShell and
+    // loading System.Drawing once per record made larger print jobs feel stuck.
+    let print_result = print_preview_image_files(
+        &preview_image_paths,
+        printer_name,
+        copies,
+        width_mm,
+        height_mm,
+    );
+    for path in preview_image_paths {
+        let _ = fs::remove_file(path);
+    }
+    print_result
+}
+
+fn print_preview_image_files(
+    image_paths: &[PathBuf],
     printer_name: &str,
     copies: i64,
     width_mm: f64,
@@ -429,7 +495,7 @@ fn print_preview_image(
 ) -> Result<(), String> {
     let script = r#"
 param(
-  [string]$ImagePath,
+  [string]$ImagePathsBase64,
   [string]$PrinterName,
   [int]$Copies,
   [double]$WidthMm,
@@ -445,8 +511,15 @@ catch {
   Add-Type -AssemblyName System.Drawing.Common
 }
 
-$image = [System.Drawing.Image]::FromFile($ImagePath)
+$pathsText = [System.Text.Encoding]::UTF8.GetString([Convert]::FromBase64String($ImagePathsBase64))
+$imagePaths = @($pathsText.Split([char]10) | Where-Object { $_ -ne '' })
+if ($imagePaths.Count -eq 0) {
+  throw 'No preview images were provided.'
+}
+
 $doc = $null
+$script:pageIndex = 0
+$script:currentImage = $null
 
 try {
   $doc = New-Object System.Drawing.Printing.PrintDocument
@@ -470,12 +543,26 @@ try {
 
   $doc.add_PrintPage({
     param($sender, $eventArgs)
-    $graphics = $eventArgs.Graphics
-    $graphics.SmoothingMode = [System.Drawing.Drawing2D.SmoothingMode]::HighQuality
-    $graphics.InterpolationMode = [System.Drawing.Drawing2D.InterpolationMode]::HighQualityBicubic
-    $graphics.PixelOffsetMode = [System.Drawing.Drawing2D.PixelOffsetMode]::HighQuality
-    $graphics.DrawImage($image, $eventArgs.PageBounds)
-    $eventArgs.HasMorePages = $false
+    if ($script:currentImage -ne $null) {
+      $script:currentImage.Dispose()
+      $script:currentImage = $null
+    }
+    $script:currentImage = [System.Drawing.Image]::FromFile([string]$imagePaths[$script:pageIndex])
+    try {
+      $graphics = $eventArgs.Graphics
+      $graphics.SmoothingMode = [System.Drawing.Drawing2D.SmoothingMode]::HighQuality
+      $graphics.InterpolationMode = [System.Drawing.Drawing2D.InterpolationMode]::HighQualityBicubic
+      $graphics.PixelOffsetMode = [System.Drawing.Drawing2D.PixelOffsetMode]::HighQuality
+      $graphics.DrawImage($script:currentImage, $eventArgs.PageBounds)
+      $script:pageIndex += 1
+      $eventArgs.HasMorePages = $script:pageIndex -lt $imagePaths.Count
+    }
+    finally {
+      if (-not $eventArgs.HasMorePages -and $script:currentImage -ne $null) {
+        $script:currentImage.Dispose()
+        $script:currentImage = $null
+      }
+    }
   })
 
   $doc.Print()
@@ -484,14 +571,23 @@ finally {
   if ($doc -ne $null) {
     $doc.Dispose()
   }
-  if ($image -ne $null) {
-    $image.Dispose()
+  if ($script:currentImage -ne $null) {
+    $script:currentImage.Dispose()
+    $script:currentImage = $null
   }
 }
 "#;
 
+    let encoded_paths = base64::engine::general_purpose::STANDARD.encode(
+        image_paths
+            .iter()
+            .map(|path| path.to_string_lossy())
+            .collect::<Vec<_>>()
+            .join("\n")
+            .as_bytes(),
+    );
     let mut args = Vec::with_capacity(6);
-    args.push(image_path.to_string_lossy().to_string());
+    args.push(encoded_paths);
     args.push(printer_name.to_string());
     args.push(copies.max(1).to_string());
     args.push(width_mm.max(1.0).to_string());
@@ -501,17 +597,15 @@ finally {
 
 const PDF_IMAGE_DPI: f32 = 300.0;
 
-fn build_label_pdf_bytes_from_png(
-    preview_png: &[u8],
+fn build_label_pdf_bytes_from_pngs(
+    preview_pngs: &[Vec<u8>],
     width_mm: f64,
     height_mm: f64,
     title: &str,
+    copies: i64,
 ) -> Result<Vec<u8>, String> {
-    let mut decode_warnings = Vec::new();
-    let image = RawImage::decode_from_bytes(preview_png, &mut decode_warnings)
-        .map_err(|err| format!("decode preview png failed: {err}"))?;
-    if image.width == 0 || image.height == 0 {
-        return Err("invalid preview image size".to_string());
+    if preview_pngs.is_empty() {
+        return Err("at least one preview image is required".to_string());
     }
 
     let page_width = Mm(width_mm.max(1.0) as f32);
@@ -522,39 +616,49 @@ fn build_label_pdf_bytes_from_png(
         return Err("invalid label size for pdf export".to_string());
     }
 
-    let image_width_pt = Px(image.width).into_pt(PDF_IMAGE_DPI).0;
-    let image_height_pt = Px(image.height).into_pt(PDF_IMAGE_DPI).0;
-    if image_width_pt <= 0.0 || image_height_pt <= 0.0 {
-        return Err("invalid preview image dimensions".to_string());
-    }
-
     let mut doc = PdfDocument::new(title);
-    let image_id = doc.add_image(&image);
-    let ops = vec![Op::UseXobject {
-        id: image_id,
-        transform: XObjectTransform {
-            scale_x: Some(page_width_pt / image_width_pt),
-            scale_y: Some(page_height_pt / image_height_pt),
-            dpi: Some(PDF_IMAGE_DPI),
-            ..Default::default()
-        },
-    }];
-
-    let page = PdfPage::new(page_width, page_height, ops);
+    let mut pages = Vec::with_capacity(preview_pngs.len() * copies.max(1) as usize);
+    for (index, preview_png) in preview_pngs.iter().enumerate() {
+        let mut decode_warnings = Vec::new();
+        let image = RawImage::decode_from_bytes(preview_png, &mut decode_warnings)
+            .map_err(|err| format!("decode preview png for record {} failed: {err}", index + 1))?;
+        if image.width == 0 || image.height == 0 {
+            return Err(format!("invalid preview image size for record {}", index + 1));
+        }
+        let image_width_pt = Px(image.width).into_pt(PDF_IMAGE_DPI).0;
+        let image_height_pt = Px(image.height).into_pt(PDF_IMAGE_DPI).0;
+        if image_width_pt <= 0.0 || image_height_pt <= 0.0 {
+            return Err(format!("invalid preview image dimensions for record {}", index + 1));
+        }
+        let image_id = doc.add_image(&image);
+        let ops = vec![Op::UseXobject {
+            id: image_id,
+            transform: XObjectTransform {
+                scale_x: Some(page_width_pt / image_width_pt),
+                scale_y: Some(page_height_pt / image_height_pt),
+                dpi: Some(PDF_IMAGE_DPI),
+                ..Default::default()
+            },
+        }];
+        for _ in 0..copies.max(1) {
+            pages.push(PdfPage::new(page_width, page_height, ops.clone()));
+        }
+    }
     let mut save_warnings = Vec::new();
     Ok(doc
-        .with_pages(vec![page])
+        .with_pages(pages)
         .save(&PdfSaveOptions::default(), &mut save_warnings))
 }
 
-fn export_preview_image_to_pdf(
-    preview_png: &[u8],
+fn export_preview_images_to_pdf(
+    preview_pngs: &[Vec<u8>],
     output_pdf_path: &Path,
     width_mm: f64,
     height_mm: f64,
     title: &str,
+    copies: i64,
 ) -> Result<(), String> {
-    let pdf_bytes = build_label_pdf_bytes_from_png(preview_png, width_mm, height_mm, title)?;
+    let pdf_bytes = build_label_pdf_bytes_from_pngs(preview_pngs, width_mm, height_mm, title, copies)?;
     fs::write(output_pdf_path, pdf_bytes).map_err(|err| format!("write exported pdf failed: {err}"))
 }
 
@@ -632,7 +736,7 @@ fn parse_printers_from_powershell_stdout(stdout: &[u8]) -> Result<Vec<String>, S
 
 #[cfg(test)]
 mod tests {
-    use super::{build_label_pdf_bytes_from_png, parse_printers_from_powershell_stdout};
+    use super::{build_label_pdf_bytes_from_pngs, parse_printers_from_powershell_stdout};
     use base64::Engine;
 
     #[test]
@@ -679,9 +783,29 @@ mod tests {
             0x00, 0x00, 0x00, 0x00, 0x49, 0x45, 0x4E, 0x44, // IEND
             0xAE, 0x42, 0x60, 0x82,
         ];
-        let pdf = build_label_pdf_bytes_from_png(&one_pixel_png, 40.0, 30.0, "test-label")
+        let pdf = build_label_pdf_bytes_from_pngs(&[one_pixel_png], 40.0, 30.0, "test-label", 1)
             .expect("should build pdf bytes");
         assert!(pdf.starts_with(b"%PDF-"), "output is not pdf");
         assert!(pdf.len() > 100, "pdf bytes too small");
+    }
+
+    #[test]
+    fn builds_one_pdf_page_per_record_and_copy() {
+        let one_pixel_png = vec![
+            0x89, 0x50, 0x4E, 0x47, 0x0D, 0x0A, 0x1A, 0x0A, 0x00, 0x00, 0x00, 0x0D, 0x49, 0x48,
+            0x44, 0x52, 0x00, 0x00, 0x00, 0x01, 0x00, 0x00, 0x00, 0x01, 0x08, 0x06, 0x00, 0x00, 0x00,
+            0x1F, 0x15, 0xC4, 0x89, 0x00, 0x00, 0x00, 0x0A, 0x49, 0x44, 0x41, 0x54, 0x78, 0x9C, 0x63,
+            0x00, 0x01, 0x00, 0x00, 0x05, 0x00, 0x01, 0x0D, 0x0A, 0x2D, 0xB4, 0x00, 0x00, 0x00, 0x00,
+            0x49, 0x45, 0x4E, 0x44, 0xAE, 0x42, 0x60, 0x82,
+        ];
+        let pdf = build_label_pdf_bytes_from_pngs(
+            &[one_pixel_png.clone(), one_pixel_png],
+            40.0,
+            30.0,
+            "batch-label",
+            2,
+        ).expect("should build a multi-page pdf");
+        let page_markers = pdf.windows(b"/Type /Page".len()).count();
+        assert!(page_markers >= 4, "expected four rendered pages, found {page_markers}");
     }
 }

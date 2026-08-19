@@ -66,6 +66,7 @@ export type ResolvedElementPayload = {
 export function buildPrintSubmitPayload(input: BuildPrintSubmitInput): PrintSubmitPayload {
   const records = input.records.map((row) => normalizeRow(row));
   const previewRecord = records[0] ?? {};
+  const printTimestamp = new Date();
 
   const elements = input.elements.map((element) => {
     const common = {
@@ -77,7 +78,7 @@ export function buildPrintSubmitPayload(input: BuildPrintSubmitInput): PrintSubm
       widthMm: element.widthMm,
       heightMm: element.heightMm,
       rotation: element.rotation,
-      content: resolveBindingValue(element.binding, previewRecord),
+      content: resolveBindingValue(element.binding, previewRecord, { now: printTimestamp }),
       textStyle: element.textStyle,
     };
 

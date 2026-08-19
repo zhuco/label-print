@@ -26,13 +26,19 @@ export const BARCODE_SYMBOLOGIES = [
 
 export type BarcodeSymbology = (typeof BARCODE_SYMBOLOGIES)[number];
 
-export type BindingMode = "fixed" | "column" | "expression";
+export type BindingMode = "fixed" | "column" | "expression" | "datetime";
+
+export type DateTimeSource = "fixed" | "printTime";
 
 export type ContentBinding = {
   mode: BindingMode;
   fixedValue?: string;
   column?: string;
   expression?: string;
+  /** Source used only when mode is datetime. */
+  dateTimeSource?: DateTimeSource;
+  /** Display pattern, for example YYYY-MM-DD or YYYY-MM-DD HH:mm:ss. */
+  dateTimeFormat?: string;
 };
 
 export type LabelSize = {
@@ -91,6 +97,12 @@ export type BaseElement = ElementRect & {
   type: ElementType;
   name: string;
   rotation: number;
+  /** Persistent canvas group. Elements with the same id act as one component. */
+  groupId?: string;
+  /** Identifies one insertion of a reusable custom graphic. */
+  presetInstanceId?: string;
+  /** The custom-graphic definition from which this element was inserted. */
+  sourcePresetId?: string;
 };
 
 export type BindableElement = BaseElement & {
