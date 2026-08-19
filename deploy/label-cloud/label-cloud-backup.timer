@@ -1,0 +1,11 @@
+[Unit]
+Description=Run Label Cloud backup every night with a randomized delay
+
+[Timer]
+OnCalendar=*-*-* 04:30:00
+Persistent=true
+RandomizedDelaySec=30min
+Unit=label-cloud-backup.service
+
+[Install]
+WantedBy=timers.target

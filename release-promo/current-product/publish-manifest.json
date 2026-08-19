@@ -1,0 +1,40 @@
+{
+  "release_range": "working-tree@2026-08-18",
+  "source_commit": "899e82790914eb5b3ffa568630c5b4d23b638c9c",
+  "article_status": "draft",
+  "download_artifact": null,
+  "sha256": null,
+  "screenshots": [
+    {
+      "file": "images/editor-industry-template.png",
+      "claim": "编辑器包含常用元素入口和食品、服装、物流、零售行业模板；食品模板可实际插入画布。"
+    },
+    {
+      "file": "images/home.png",
+      "claim": "首页包含新建、打开、搜索、最近使用和个人标签入口。"
+    }
+  ],
+  "generated_images": [
+    {
+      "file": "images/wechat-cover-1410x600.png",
+      "role": "公众号封面插画",
+      "dimensions": "1410x600",
+      "ratio": "2.35:1",
+      "disclosure": "AI 生成的场景化封面，不是软件界面截图，条码与二维码仅作装饰。"
+    }
+  ],
+  "unresolved": [
+    "推广网盘下载地址和提取码未填写。",
+    "Windows 10/11 与 Windows 7 两个安装包的文件名、大小和 SHA-256 未填写。",
+    "正式安装包仍需签名、干净 Windows 10/11 x64 与 Windows 7 x64 安装升级、真实热敏打印机及条码扫描验收。"
+  ],
+  "cloud_upload": {
+    "status": "not_requested",
+    "provider": null,
+    "url": null
+  },
+  "wechat_publish": {
+    "status": "manual_by_user",
+    "url": null
+  }
+}

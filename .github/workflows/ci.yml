@@ -29,6 +29,9 @@ jobs:
       - name: Install dependencies
         run: pnpm install --frozen-lockfile
 
+      - name: Check text encoding and mojibake
+        run: pnpm check:mojibake
+
       - name: Lint TypeScript workspaces
         run: pnpm -r --filter '!@label/e2e' lint
 

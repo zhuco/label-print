@@ -1,0 +1,93 @@
+services:
+  postgres:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_DB: label_cloud
+      POSTGRES_USER: label
+      POSTGRES_PASSWORD: local-label-password
+    ports:
+      - "5432:5432"
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U label -d label_cloud"]
+      interval: 5s
+      timeout: 3s
+      retries: 20
+    volumes:
+      - label-postgres:/var/lib/postgresql/data
+
+  minio:
+    image: minio/minio:RELEASE.2025-04-22T22-12-26Z
+    command: server /data --console-address ":9001"
+    environment:
+      MINIO_ROOT_USER: local-label-access
+      MINIO_ROOT_PASSWORD: local-label-secret
+      # Community MinIO supports a server-wide explicit CORS allow-list.
+      MINIO_API_CORS_ALLOW_ORIGIN: tauri://localhost,http://tauri.localhost,https://tauri.localhost,http://localhost:5173,http://127.0.0.1:5173,http://localhost:4173,http://127.0.0.1:4173
+    ports:
+      - "9000:9000"
+      - "9001:9001"
+    volumes:
+      - label-minio:/data
+
+  minio-init:
+    image: minio/mc:RELEASE.2025-04-16T18-13-26Z
+    depends_on:
+      minio:
+        condition: service_started
+    entrypoint: >-
+      /bin/sh -c "until mc alias set local http://minio:9000 local-label-access local-label-secret; do sleep 1; done;
+      mc mb --ignore-existing local/label-assets"
+
+  mailpit:
+    # Pinned digest keeps local password-reset tests reproducible.
+    image: axllent/mailpit@sha256:7f33095f80e901f6ad08028f06ca284aa58fe84942be5496008d041d3b9f4d4d
+    ports:
+      - "1025:1025"
+      - "8025:8025"
+
+  api:
+    build:
+      context: ../..
+      dockerfile: apps/server/Dockerfile
+    depends_on:
+      postgres:
+        condition: service_healthy
+      minio-init:
+        condition: service_completed_successfully
+      mailpit:
+        condition: service_started
+    environment:
+      NODE_ENV: production
+      HOST: 0.0.0.0
+      PORT: 8787
+      ACCESS_TOKEN_SECRET: local-development-only-change-before-public-use
+      METRICS_TOKEN: local-development-metrics-token
+      BILLING_WEBHOOK_SECRET: local-development-billing-relay-secret
+      RELEASE_ADMIN_TOKEN: local-development-release-admin-token
+      DATABASE_URL: postgres://label:local-label-password@postgres:5432/label_cloud
+      CORS_ALLOWED_ORIGINS: tauri://localhost,http://tauri.localhost,https://tauri.localhost,http://localhost:5173,http://127.0.0.1:5173,http://localhost:4173,http://127.0.0.1:4173
+      S3_BUCKET: label-assets
+      S3_REGION: us-east-1
+      S3_ENDPOINT: http://minio:9000
+      # The API reaches MinIO on the Docker network, whereas the desktop client reaches this host port.
+      S3_PUBLIC_ENDPOINT: http://127.0.0.1:9000
+      S3_ACCESS_KEY_ID: local-label-access
+      S3_SECRET_ACCESS_KEY: local-label-secret
+      S3_FORCE_PATH_STYLE: "true"
+      SMTP_HOST: mailpit
+      SMTP_PORT: 1025
+      SMTP_SECURE: "false"
+      SMTP_FROM: "Label Cloud Local <no-reply@label.local>"
+    command: >-
+      /bin/sh -c "pnpm --filter @label/server migrate && pnpm --filter @label/server start"
+    healthcheck:
+      test: ["CMD-SHELL", "wget -q -O /dev/null http://127.0.0.1:8787/healthz || exit 1"]
+      interval: 10s
+      timeout: 3s
+      retries: 10
+    ports:
+      - "${API_PORT_HOST:-8787}:8787"
+
+volumes:
+  label-postgres:
+  label-minio:

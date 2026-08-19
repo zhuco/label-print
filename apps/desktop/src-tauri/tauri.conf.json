@@ -1,25 +1,55 @@
 {
   "$schema": "https://schema.tauri.app/config/2",
-  "productName": "Label Print",
-  "version": "0.1.0",
+  "productName": "恒策标签条码打印软件",
+  "version": "0.1.4",
   "identifier": "com.opensource.labelprint",
   "build": {
-    "beforeDevCommand": "pnpm --dir ../desktop dev",
-    "beforeBuildCommand": "pnpm --dir ../desktop build",
-    "frontendDist": "../desktop/dist",
+    "beforeDevCommand": "pnpm --filter @label/desktop exec vite --host 127.0.0.1 --port 5173 --strictPort",
+    "beforeBuildCommand": "pnpm --filter @label/desktop build",
+    "frontendDist": "../dist",
     "devUrl": "http://localhost:5173"
   },
   "app": {
     "windows": [
       {
-        "title": "Label Print",
+        "title": "恒策标签条码打印软件",
         "width": 1280,
-        "height": 800
+        "height": 800,
+        "minWidth": 1100,
+        "minHeight": 700,
+        "maximized": false,
+        "decorations": false
       }
     ]
   },
+  "plugins": {
+    "updater": {
+      "pubkey": "",
+      "endpoints": []
+    }
+  },
   "bundle": {
     "active": true,
-    "targets": "all"
+    "targets": ["nsis", "msi"],
+    "windows": {
+      "webviewInstallMode": {
+        "type": "downloadBootstrapper",
+        "silent": false
+      },
+      "wix": {
+        "language": "zh-CN"
+      }
+    },
+    "icon": [
+      "icons/icon.ico",
+      "icons/icon.png"
+    ],
+    "fileAssociations": [
+      {
+        "ext": ["lpt"],
+        "name": "恒策标签条码打印软件模板文件",
+        "description": "恒策标签条码打印软件标签设计模板"
+      }
+    ]
   }
 }

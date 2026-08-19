@@ -4,6 +4,14 @@
   "packageManager": "pnpm@10.30.3",
   "scripts": {
     "test": "pnpm -r test",
-    "lint": "pnpm -r lint"
+    "check:mojibake": "node scripts/check-mojibake.mjs",
+    "lint": "pnpm -r lint && pnpm check:mojibake",
+    "clean:build": "powershell -ExecutionPolicy Bypass -File scripts/clean-build.ps1",
+    "build-installer": "powershell -ExecutionPolicy Bypass -File scripts/build-tauri-msi.ps1 -NoPause",
+    "build:win7": "powershell -ExecutionPolicy Bypass -File scripts/build-win7.ps1",
+    "build:win7-installer": "powershell -ExecutionPolicy Bypass -File scripts/build-win7.ps1 -BundleNsis",
+    "build:all-installers": "pnpm build-installer && pnpm build:win7-installer",
+    "check:win7-imports": "powershell -ExecutionPolicy Bypass -File scripts/check-win7-imports.ps1",
+    "hooks:enable": "git config core.hooksPath .githooks"
   }
 }

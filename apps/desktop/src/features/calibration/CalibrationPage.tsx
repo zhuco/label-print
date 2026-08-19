@@ -24,7 +24,9 @@ export function CalibrationPage() {
         value={offsetX}
         onChange={(event) => setOffsetX(event.target.value)}
       />
-      <button type="button" onClick={save}>保存校准</button>
+      <button type="button" onClick={save}>
+        保存校准
+      </button>
       {error && <p className="warning">{error}</p>}
     </section>
   );

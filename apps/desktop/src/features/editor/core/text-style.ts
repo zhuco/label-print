@@ -1,0 +1,166 @@
+import type { TextStyle } from "./types";
+
+type DecorationStyle = Pick<TextStyle, "underline" | "strikeThrough">;
+
+export const ELEMENT_FRAME_PADDING_X_PX = 0;
+export const ELEMENT_FRAME_PADDING_Y_PX = 0;
+
+export function buildTextDecoration(style: DecorationStyle): string {
+  const tokens: string[] = [];
+
+  if (style.underline) {
+    tokens.push("underline");
+  }
+  if (style.strikeThrough) {
+    tokens.push("line-through");
+  }
+
+  return tokens.length > 0 ? tokens.join(" ") : "none";
+}
+
+type ComputeSingleLineScaleInput = {
+  text: string;
+  textStyle: TextStyle;
+  widthMm: number;
+  mmToPx: number;
+};
+
+type ComputeTextFitScaleInput = ComputeSingleLineScaleInput & {
+  heightMm: number;
+};
+
+export type TextFitScale = {
+  scaleX: number;
+  scaleY: number;
+};
+
+let singleLineMeasureCanvas: HTMLCanvasElement | null = null;
+
+export function computeSingleLineScaleX(input: ComputeSingleLineScaleInput): number {
+  const declaredScale = clamp(input.textStyle.widthScale ?? 1, 0.001, 1);
+  const plainText = input.text.replace(/\r?\n/g, " ");
+  const fontPx = Math.max(1, input.textStyle.fontSize * input.mmToPx);
+  const letterSpacingPx = Math.max(0, input.textStyle.letterSpacing * input.mmToPx);
+  const measuredWidthPx = measureSingleLineTextWidthPx(plainText, input.textStyle, fontPx, letterSpacingPx);
+  const estimatedWidthPx =
+    measuredWidthPx > 0
+      ? measuredWidthPx
+      : estimateSingleLineUnits(plainText) * fontPx +
+        Math.max(0, plainText.length - 1) * letterSpacingPx;
+
+  const availableWidthPx = Math.max(1, input.widthMm * input.mmToPx - ELEMENT_FRAME_PADDING_X_PX * 2);
+  const fitScale = estimatedWidthPx > 0 ? availableWidthPx / estimatedWidthPx : 1;
+
+  return clamp(Math.min(declaredScale, fitScale), 0.001, 1);
+}
+
+/**
+ * Returns the visual scale needed to keep all text inside its element frame.
+ * Width and height are fitted independently so resizing one axis never hides
+ * the text on the other axis.
+ */
+export function computeTextFitScale(input: ComputeTextFitScaleInput): TextFitScale {
+  const isSingleLine = input.textStyle.wrapMode === "singleLine";
+  const fontPx = Math.max(1, input.textStyle.fontSize * input.mmToPx);
+  const letterSpacingPx = Math.max(0, input.textStyle.letterSpacing * input.mmToPx);
+  const availableWidthPx = Math.max(1, input.widthMm * input.mmToPx - ELEMENT_FRAME_PADDING_X_PX * 2);
+  const availableHeightPx = Math.max(1, input.heightMm * input.mmToPx - ELEMENT_FRAME_PADDING_Y_PX * 2);
+  const lineCount = isSingleLine
+    ? 1
+    : estimateWrappedLineCount(
+        input.text,
+        input.textStyle,
+        fontPx,
+        letterSpacingPx,
+        availableWidthPx
+      );
+  const lineAdvancePx = fontPx * Math.max(0.1, input.textStyle.lineHeight);
+  const naturalHeightPx = Math.max(1, fontPx + Math.max(0, lineCount - 1) * lineAdvancePx);
+
+  return {
+    scaleX: isSingleLine ? computeSingleLineScaleX(input) : 1,
+    scaleY: clamp(availableHeightPx / naturalHeightPx, 0.001, 1),
+  };
+}
+
+function estimateWrappedLineCount(
+  text: string,
+  textStyle: TextStyle,
+  fontPx: number,
+  letterSpacingPx: number,
+  availableWidthPx: number
+): number {
+  const explicitLines = text.split(/\r?\n/);
+
+  return explicitLines.reduce((total, line) => {
+    if (!line) {
+      return total + 1;
+    }
+
+    const measuredWidthPx = measureSingleLineTextWidthPx(line, textStyle, fontPx, letterSpacingPx);
+    const estimatedWidthPx =
+      measuredWidthPx > 0
+        ? measuredWidthPx
+        : estimateSingleLineUnits(line) * fontPx +
+          Math.max(0, line.length - 1) * letterSpacingPx;
+
+    return total + Math.max(1, Math.ceil(estimatedWidthPx / availableWidthPx));
+  }, 0);
+}
+
+function estimateSingleLineUnits(value: string): number {
+  const text = value.replace(/\r?\n/g, " ").trim();
+  if (!text) {
+    return 0;
+  }
+
+  let units = 0;
+  for (const char of text) {
+    if (char === " ") {
+      units += 0.35;
+      continue;
+    }
+    units += char.charCodeAt(0) <= 0x7f ? 0.55 : 1;
+  }
+  return units;
+}
+
+function measureSingleLineTextWidthPx(
+  text: string,
+  textStyle: TextStyle,
+  fontPx: number,
+  letterSpacingPx: number
+): number {
+  if (!text) {
+    return 0;
+  }
+  if (typeof document === "undefined") {
+    return 0;
+  }
+  if (typeof navigator !== "undefined" && /jsdom/i.test(navigator.userAgent)) {
+    return 0;
+  }
+
+  try {
+    if (!singleLineMeasureCanvas) {
+      singleLineMeasureCanvas = document.createElement("canvas");
+    }
+    const context = singleLineMeasureCanvas.getContext("2d");
+    if (!context) {
+      return 0;
+    }
+
+    const weight = Math.max(100, Math.min(900, Math.round(textStyle.fontWeight || 400)));
+    const italic = textStyle.italic ? "italic " : "";
+    context.font = `${italic}${weight} ${fontPx}px ${textStyle.fontFamily}`;
+    const metricsWidthPx = context.measureText(text).width;
+
+    return metricsWidthPx + Math.max(0, text.length - 1) * letterSpacingPx;
+  } catch {
+    return 0;
+  }
+}
+
+function clamp(value: number, min: number, max: number): number {
+  return Math.min(Math.max(value, min), max);
+}
