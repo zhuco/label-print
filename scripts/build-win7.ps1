@@ -26,6 +26,29 @@ function Invoke-External {
     }
 }
 
+function Get-Sha256Hash {
+    Param(
+        [Parameter(Mandatory = $true)][string]$Path
+    )
+
+    $getFileHash = Get-Command Get-FileHash -ErrorAction SilentlyContinue
+    if ($null -ne $getFileHash) {
+        return (Get-FileHash -LiteralPath $Path -Algorithm SHA256).Hash
+    }
+
+    # Windows 7 hosts can run an older PowerShell without Get-FileHash. CertUtil
+    # is available there and keeps the release script from failing after packaging.
+    $certutilOutput = & certutil.exe -hashfile $Path SHA256
+    if ($LASTEXITCODE -ne 0) {
+        throw "Unable to calculate SHA-256 with certutil: $Path"
+    }
+    $hashLine = $certutilOutput | Where-Object { $_ -match '^\s*[0-9A-Fa-f]{2}(?:\s*[0-9A-Fa-f]{2}){31}\s*$' } | Select-Object -First 1
+    if ([string]::IsNullOrWhiteSpace($hashLine)) {
+        throw "Unable to parse SHA-256 from certutil output: $Path"
+    }
+    return ($hashLine -replace '\s', '').ToUpperInvariant()
+}
+
 function Copy-Tree {
     Param(
         [Parameter(Mandatory = $true)][string]$Source,
@@ -366,7 +389,7 @@ try {
             "-File", (Join-Path $scriptDir "check-win7-imports.ps1"),
             "-Path", $installerOutput
         )
-        $installerHash = (Get-FileHash -LiteralPath $installerOutput -Algorithm SHA256).Hash
+        $installerHash = Get-Sha256Hash -Path $installerOutput
         Write-Host "Win7 installer: $installerOutput" -ForegroundColor Green
         Write-Host "SHA256: $installerHash"
     }

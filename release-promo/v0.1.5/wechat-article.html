@@ -1,0 +1,38 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width,initial-scale=1" />
+<title>恒策标签条码打印软件 v0.1.5：把标签上的小字和框线打印得更稳</title>
+<style>
+body{margin:0;background:#eef2f7;color:#18212f}.toolbar{position:sticky;top:0;z-index:5;display:flex;gap:10px;justify-content:center;padding:12px;background:rgba(255,255,255,.96);border-bottom:1px solid #dfe5ec}button{border:0;border-radius:8px;padding:10px 18px;background:#1769e0;color:#fff;font-size:15px;cursor:pointer}#copy-status{align-self:center;color:#52606d;font:14px sans-serif}.canvas{padding:22px 10px 48px}@media(max-width:720px){.canvas{padding:0}}
+</style>
+</head>
+<body>
+<div class="toolbar"><button id="copy-button" type="button">复制图文</button><span id="copy-status">复制后请在公众号编辑器中预览</span></div>
+<main class="canvas"><article id="wechat-copy-root" style="box-sizing:border-box;max-width:677px;margin:0 auto;padding:24px 20px;background:#ffffff;font-family:-apple-system,BlinkMacSystemFont,Segoe UI,PingFang SC,Hiragino Sans GB,Microsoft YaHei,Arial,sans-serif;"><p style="margin:0 0 8px;color:#1769e0;font-size:14px;font-weight:600;letter-spacing:.08em;">版本更新 · 2026-08-23</p><h1 style="margin:0;color:#101828;font-size:28px;line-height:1.35;">恒策标签条码打印软件 v0.1.5：把标签上的小字和框线打印得更稳</h1><section style="margin:18px 0 0;padding:15px 16px;border-left:4px solid #1769e0;background:#f3f7ff;"><p style="margin:8px 0 0;color:#3f4650;font-size:16px;line-height:1.9;">标签上的小字、条码下方数字和表格框线，往往只有真正打印出来才会暴露问题。v0.1.5 针对热敏打印的缩放处理、营养成分表边框和编辑器三栏高度做了修复，让编辑预览与实际输出更一致。</p></section><section style="margin:30px 0 0;"><h2 style="margin:0;padding-bottom:9px;border-bottom:2px solid #1769e0;color:#18212f;font-size:22px;line-height:1.5;">小字号文字和条码数字，尽量不再被横向压扁</h2><section style="margin:18px 0 0;"><h3 style="margin:0;color:#18212f;font-size:18px;line-height:1.55;">先按打印机点阵处理，再交给系统驱动</h3><p style="margin:8px 0 0;color:#3f4650;font-size:16px;line-height:1.9;">这次调整了热敏打印的图像处理顺序：打印内容会先按目标打印机的实际点阵尺寸生成单色图，再进入 Windows 驱动。文字和条码数字在需要适配空间时会等比缩小，不再仅横向拉伸字形。</p></section><section style="margin:18px 0 0;"><h3 style="margin:0;color:#18212f;font-size:18px;line-height:1.55;">适合需要看清配料、日期和条码人眼可读数字的标签</h3><p style="margin:8px 0 0;color:#3f4650;font-size:16px;line-height:1.9;">如果标签里有密集中文、日期批次信息或条码下方数字，更新后建议用常用纸张和打印机重新打印一张进行确认。实际效果仍会受到驱动、纸张、碳带与校准设置影响。</p></section></section><section style="margin:30px 0 0;"><h2 style="margin:0;padding-bottom:9px;border-bottom:2px solid #1769e0;color:#18212f;font-size:22px;line-height:1.5;">营养成分表的框线不再少一边</h2><section style="margin:18px 0 0;"><h3 style="margin:0;color:#18212f;font-size:18px;line-height:1.55;">矩形框线改为在边界内绘制</h3><p style="margin:8px 0 0;color:#3f4650;font-size:16px;line-height:1.9;">此前，营养成分表等矩形框在某些缩放和打印捕获条件下，左侧边线可能被裁掉。现在矩形框线完全绘制在元素自身范围内，编辑画布和打印捕获使用同一策略。</p></section><section style="margin:18px 0 0;"><h3 style="margin:0;color:#18212f;font-size:18px;line-height:1.55;">配图待补充：更新版营养成分表预览</h3><p style="margin:8px 0 0;color:#3f4650;font-size:16px;line-height:1.9;">发布前请补充一张更新版的实际预览或实物打印照片，重点展示营养成分表左侧框线完整、文字和条码数字清晰。</p></section></section><section style="margin:30px 0 0;"><h2 style="margin:0;padding-bottom:9px;border-bottom:2px solid #1769e0;color:#18212f;font-size:22px;line-height:1.5;">切换元素时，编辑器三栏保持稳定</h2><section style="margin:18px 0 0;"><h3 style="margin:0;color:#18212f;font-size:18px;line-height:1.55;">元素、画布、属性面板不再跟着内容忽高忽低</h3><p style="margin:8px 0 0;color:#3f4650;font-size:16px;line-height:1.9;">编辑器左侧元素、中间画布和右侧属性面板现在固定占用窗口剩余高度。切换文字、条码或图形时，属性内容在自身区域滚动，不再改变三栏整体高度。</p></section></section><section style="margin:30px 0 0;"><h2 style="margin:0;padding-bottom:9px;border-bottom:2px solid #1769e0;color:#18212f;font-size:22px;line-height:1.5;">更新前请知道这些边界</h2><section style="margin:18px 0 0;"><h3 style="margin:0;color:#18212f;font-size:18px;line-height:1.55;">仍建议在实际打印机上验收</h3><p style="margin:8px 0 0;color:#3f4650;font-size:16px;line-height:1.9;">软件当前通过 Windows 系统驱动打印，暂未提供 ZPL、TSPL 等原生指令后端。不同打印机分辨率、纸张和碳带会影响最终效果；涉及食品标签、零售标签等正式用途时，请按业务要求核对内容和扫描效果。</p></section></section><section style="margin:28px 0 0;padding:18px;border-radius:12px;background:#fff8e8;"><h2 style="margin:0 0 8px;color:#654b11;font-size:20px;line-height:1.5;">使用说明</h2><ul style="margin:0;padding-left:1.3em;color:#544b38;font-size:15px;line-height:1.85;"><li>支持 Windows x64 桌面环境；Windows 7 x64 兼容版需在真实系统验收后单独发布。</li><li>正式安装包、下载链接和 SHA-256 校验值将在构建验收完成后补充。</li><li>发布前请替换“配图待补充”段落为更新版实机预览或打印照片。</li></ul></section><section style="margin:28px 0 0;padding:18px;border:1px solid #e4e9f0;border-radius:12px;background:#f7f9fc;"><h2 style="margin:0 0 10px;color:#18212f;font-size:20px;line-height:1.5;">下载与安装</h2><p style="margin:5px 0;color:#3f4650;font-size:15px;line-height:1.7;word-break:break-all;"><strong style="color:#18212f;">下载渠道：</strong>待发布渠道确认</p><p style="margin:12px 0 0;color:#7a5360;font-size:13px;line-height:1.7;">如后续使用推广网盘链接，将在发布页明确说明。</p></section><p style="margin:28px 0 0;text-align:center;color:#3f4650;font-size:16px;line-height:1.9;">如果你日常会制作商品、食品或物流标签，更新后可以先用自己的常用模板打印一张，确认文字、框线和条码数字是否符合现场要求。</p></article></main>
+<script>
+const button=document.getElementById('copy-button');
+const status=document.getElementById('copy-status');
+button.addEventListener('click',async()=>{
+  const root=document.getElementById('wechat-copy-root');
+  let copied=false;
+  if(window.ClipboardItem&&navigator.clipboard&&window.isSecureContext){
+    try{
+      const htmlBlob=new Blob([root.outerHTML],{type:'text/html'});
+      const textBlob=new Blob([root.innerText],{type:'text/plain'});
+      await navigator.clipboard.write([new ClipboardItem({'text/html':htmlBlob,'text/plain':textBlob})]);
+      copied=true;
+    }catch(error){console.warn(error);}
+  }
+  if(!copied){
+    const selection=window.getSelection();
+    const range=document.createRange();
+    range.selectNodeContents(root);selection.removeAllRanges();selection.addRange(range);
+    copied=document.execCommand('copy');selection.removeAllRanges();
+  }
+  status.textContent=copied?'已复制，请粘贴并检查图片、链接和样式':'复制失败，请手动全选正文复制';
+});
+</script>
+</body>
+</html>

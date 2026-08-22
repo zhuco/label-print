@@ -138,7 +138,7 @@ describe("Print submit modal", () => {
     expect(surface?.classList.contains("print-preview-capture-mode")).toBe(false);
   });
 
-  it("uses CSS borders for rectangle presets so export keeps their line width", () => {
+  it("uses an inset CSS stroke for rectangle presets so export keeps every edge", () => {
     const props = buildProps();
     props.elements = [createShapeElement({
       id: "shape-1",
@@ -151,7 +151,8 @@ describe("Print submit modal", () => {
 
     expect(presetShape).not.toBeNull();
     expect(presetShape?.querySelector("svg")).toBeNull();
-    expect(presetShape?.style.borderWidth).toBe("1.3px");
+    expect(presetShape?.style.borderWidth).toBe("0px");
+    expect(presetShape?.style.boxShadow).toBe("inset 0 0 0 1.3px #2a6fa8");
     expect(presetShape?.style.borderRadius).toBe("0");
     expect(presetShape?.style.backgroundColor).toBe("transparent");
   });

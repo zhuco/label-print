@@ -3303,7 +3303,7 @@ export default function App() {
                     openSaveDialog("cloud", true);
                   }}
                 >
-                  另存为...
+                  另存为
                 </button>
                 <button
                   type="button"

@@ -1,0 +1,21 @@
+{
+  "release_range": "3110272..待创建 v0.1.5 发布提交（拟议范围）",
+  "source_commit": "待提交后补充",
+  "article_status": "draft",
+  "download_artifacts": [],
+  "screenshots": [],
+  "unresolved": [
+    "补充 v0.1.5 的营养成分表完整边框预览或实物打印照片。",
+    "补充已验收的正式安装包、下载地址、文件大小与 SHA-256。",
+    "在目标热敏打印机上复核小号中文、条码数字和扫描效果。"
+  ],
+  "cloud_upload": {
+    "status": "not_requested",
+    "provider": null,
+    "url": null
+  },
+  "wechat_publish": {
+    "status": "not_requested",
+    "url": null
+  }
+}

@@ -11,9 +11,9 @@ import type { EditorElement, LabelSize, TextStyle } from "./core/types";
 import { normalizeVisualDashArray, normalizeVisualStrokeWidth, toAlphaColor, toShapeBorderWidthPx } from "./core/visual-style";
 import { PresetGlyph, readIconPresetIdFromBinding, readShapePresetIdFromBinding } from "./core/visual-presets";
 
-// A 300 DPI source works with both 203/205 DPI and 300 DPI thermal printers.
-// The printer driver performs its normal downsampling when its native
-// resolution is lower, without making label rendering depend on display DPI.
+// Use a stable, high-resolution intermediate independent of the display DPI.
+// The native print stage converts this image once into the printer's actual
+// dot grid and thresholds it before submitting the page.
 const PRINT_RENDER_DPI = 300;
 
 export type DirectPrintSubmitInput = {
@@ -357,19 +357,28 @@ export function PrintSubmitModal({
                         heightMm: element.heightMm,
                         mmToPx: previewMmToPx,
                       });
+                      // Preserve glyph proportions. Independent scaleX/scaleY transforms
+                      // turn small CJK strokes into sub-pixel lines before the thermal
+                      // raster pass, which makes them look broken even when barcodes stay
+                      // sharp. A uniform font-size reduction keeps the same fit without
+                      // distorting the typeface.
+                      const uniformTextFitScale = Math.min(textFitScale.scaleX, textFitScale.scaleY);
                       return (
                         <div key={element.id} className="print-preview-element print-preview-text" style={elementStyle}>
                           <div
                             className="element-content"
                             style={{
                               fontFamily: element.textStyle.fontFamily,
-                              fontSize: `${Math.max(1, element.textStyle.fontSize * previewMmToPx)}px`,
+                              fontSize: `${Math.max(1, element.textStyle.fontSize * previewMmToPx * uniformTextFitScale)}px`,
                               fontWeight: element.textStyle.fontWeight,
                               fontStyle: element.textStyle.italic ? "italic" : "normal",
                               textDecoration: buildTextDecoration(element.textStyle),
                               textAlign: element.textStyle.align,
                               color: element.textStyle.color,
-                              letterSpacing: `${Math.max(0, element.textStyle.letterSpacing * previewMmToPx)}px`,
+                              letterSpacing: `${Math.max(
+                                0,
+                                element.textStyle.letterSpacing * previewMmToPx * uniformTextFitScale
+                              )}px`,
                               lineHeight: element.textStyle.lineHeight,
                               whiteSpace: wrapMode === "singleLine" ? "nowrap" : "pre-wrap",
                               overflowWrap: wrapMode === "singleLine" ? "normal" : "anywhere",
@@ -387,10 +396,7 @@ export function PrintSubmitModal({
                               className={`element-content-text ${
                                 wrapMode === "singleLine" ? "is-single-line" : "is-auto-wrap"
                               }`}
-                              style={{
-                                transform: `scale(${textFitScale.scaleX}, ${textFitScale.scaleY})`,
-                                transformOrigin: `${getAlignTransformOrigin(element.textStyle.align)} center`,
-                              }}
+                              style={{ transformOrigin: `${getAlignTransformOrigin(element.textStyle.align)} center` }}
                             >
                               {previewValue}
                             </span>
@@ -501,6 +507,7 @@ export function PrintSubmitModal({
                       // text. Render the common label-frame shapes as CSS so
                       // their border width matches the on-screen preview.
                       if (shapePresetId === "rectangle" || shapePresetId === "rounded-rectangle") {
+                        const borderWidthPx = toShapeBorderWidthPx(strokeWidth);
                         return (
                           <div
                             key={element.id}
@@ -512,6 +519,15 @@ export function PrintSubmitModal({
                               // otherwise the generic shape fill turns table frames blue.
                               backgroundColor: "transparent",
                               borderRadius: shapePresetId === "rounded-rectangle" ? "4px" : "0",
+                              ...(strokeDashArray.length > 0
+                                ? {}
+                                : {
+                                    borderStyle: "none",
+                                    borderWidth: 0,
+                                    // Draw inward so no edge lands outside the capture box or
+                                    // vanishes because of percentage/sub-pixel rounding.
+                                    boxShadow: `inset 0 0 0 ${borderWidthPx}px ${strokeColor}`,
+                                  }),
                             }}
                           />
                         );

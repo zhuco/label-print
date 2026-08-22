@@ -291,6 +291,8 @@ function buildShapeElement(context: BuilderContext, spec: ShapeSpec): EditorElem
     textStyle: spec.color
       ? {
           color: spec.color,
+          strokeColor: spec.color,
+          fillColor: spec.color,
         }
       : undefined,
   });

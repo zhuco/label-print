@@ -74,4 +74,17 @@ describe("canvas inline editing", () => {
     expect(container.querySelector(".canvas-element.editing .qrcode-preview")).not.toBeNull();
     expect(editor).toHaveValue("https://example.test/live");
   });
+
+  it("draws solid rectangle frames inside their bounds so no edge is clipped", () => {
+    openEmptyDocument();
+    useEditorStore.getState().addShapeElement({ presetId: "rectangle" });
+
+    const { container } = render(<CanvasStage systemFonts={[]} />);
+    const frame = container.querySelector<HTMLElement>(".shape-preview-css-frame");
+
+    expect(frame).not.toBeNull();
+    expect(frame?.querySelector("svg")).toBeNull();
+    expect(frame?.style.borderWidth).toBe("0px");
+    expect(frame?.style.boxShadow).toBe("inset 0 0 0 1.3px #2a6fa8");
+  });
 });

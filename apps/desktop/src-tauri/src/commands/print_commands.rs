@@ -511,6 +511,87 @@ catch {
   Add-Type -AssemblyName System.Drawing.Common
 }
 
+# Resize once into the printer's native dot grid, then remove every gray
+# antialiasing pixel before handing the page to the thermal driver. Barcode
+# rectangles already survive the old pipeline; this specifically prevents
+# small glyph strokes from being weakened by a second driver-side resample.
+Add-Type -ReferencedAssemblies @('System.Drawing') -TypeDefinition @'
+using System;
+using System.Drawing;
+using System.Drawing.Drawing2D;
+using System.Drawing.Imaging;
+using System.Runtime.InteropServices;
+
+namespace LabelPrint.Native
+{
+    public static class ThermalRaster
+    {
+        public static Bitmap Prepare(Image source, int width, int height, float dpiX, float dpiY, byte threshold)
+        {
+            if (source == null) throw new ArgumentNullException("source");
+            if (width < 1 || height < 1) throw new ArgumentOutOfRangeException("width");
+
+            Bitmap target = new Bitmap(width, height, PixelFormat.Format24bppRgb);
+            target.SetResolution(dpiX, dpiY);
+
+            using (Graphics graphics = Graphics.FromImage(target))
+            {
+                graphics.Clear(Color.White);
+                graphics.CompositingMode = CompositingMode.SourceCopy;
+                graphics.CompositingQuality = CompositingQuality.HighQuality;
+                graphics.InterpolationMode = InterpolationMode.HighQualityBicubic;
+                graphics.PixelOffsetMode = PixelOffsetMode.HighQuality;
+                graphics.SmoothingMode = SmoothingMode.HighQuality;
+                graphics.DrawImage(
+                    source,
+                    new Rectangle(0, 0, width, height),
+                    0,
+                    0,
+                    source.Width,
+                    source.Height,
+                    GraphicsUnit.Pixel
+                );
+            }
+
+            Rectangle bounds = new Rectangle(0, 0, width, height);
+            BitmapData data = target.LockBits(bounds, ImageLockMode.ReadWrite, PixelFormat.Format24bppRgb);
+            try
+            {
+                int stride = data.Stride;
+                int byteCount = Math.Abs(stride) * height;
+                byte[] pixels = new byte[byteCount];
+                Marshal.Copy(data.Scan0, pixels, 0, byteCount);
+
+                for (int y = 0; y < height; y++)
+                {
+                    int row = stride >= 0 ? y * stride : (height - 1 - y) * -stride;
+                    for (int x = 0; x < width; x++)
+                    {
+                        int offset = row + x * 3;
+                        int blue = pixels[offset];
+                        int green = pixels[offset + 1];
+                        int red = pixels[offset + 2];
+                        int luminance = (29 * blue + 150 * green + 77 * red + 128) >> 8;
+                        byte mono = luminance <= threshold ? (byte)0 : (byte)255;
+                        pixels[offset] = mono;
+                        pixels[offset + 1] = mono;
+                        pixels[offset + 2] = mono;
+                    }
+                }
+
+                Marshal.Copy(pixels, 0, data.Scan0, byteCount);
+            }
+            finally
+            {
+                target.UnlockBits(data);
+            }
+
+            return target;
+        }
+    }
+}
+'@
+
 $pathsText = [System.Text.Encoding]::UTF8.GetString([Convert]::FromBase64String($ImagePathsBase64))
 $imagePaths = @($pathsText.Split([char]10) | Where-Object { $_ -ne '' })
 if ($imagePaths.Count -eq 0) {
@@ -519,7 +600,6 @@ if ($imagePaths.Count -eq 0) {
 
 $doc = $null
 $script:pageIndex = 0
-$script:currentImage = $null
 
 try {
   $doc = New-Object System.Drawing.Printing.PrintDocument
@@ -543,24 +623,55 @@ try {
 
   $doc.add_PrintPage({
     param($sender, $eventArgs)
-    if ($script:currentImage -ne $null) {
-      $script:currentImage.Dispose()
-      $script:currentImage = $null
-    }
-    $script:currentImage = [System.Drawing.Image]::FromFile([string]$imagePaths[$script:pageIndex])
+    $sourceImage = $null
+    $thermalImage = $null
     try {
+      $sourceImage = [System.Drawing.Image]::FromFile([string]$imagePaths[$script:pageIndex])
       $graphics = $eventArgs.Graphics
-      $graphics.SmoothingMode = [System.Drawing.Drawing2D.SmoothingMode]::HighQuality
-      $graphics.InterpolationMode = [System.Drawing.Drawing2D.InterpolationMode]::HighQualityBicubic
-      $graphics.PixelOffsetMode = [System.Drawing.Drawing2D.PixelOffsetMode]::HighQuality
-      $graphics.DrawImage($script:currentImage, $eventArgs.PageBounds)
+      $dpiX = [single]$graphics.DpiX
+      $dpiY = [single]$graphics.DpiY
+      $configuredResolution = $doc.DefaultPageSettings.PrinterResolution
+      if ($dpiX -lt 150 -or $dpiX -gt 1200) {
+        $dpiX = if ($configuredResolution.X -ge 150) { [single]$configuredResolution.X } else { [single]203 }
+      }
+      if ($dpiY -lt 150 -or $dpiY -gt 1200) {
+        $dpiY = if ($configuredResolution.Y -ge 150) { [single]$configuredResolution.Y } else { [single]203 }
+      }
+
+      $targetWidth = [Math]::Max(1, [int][Math]::Round($WidthMm / 25.4 * $dpiX))
+      $targetHeight = [Math]::Max(1, [int][Math]::Round($HeightMm / 25.4 * $dpiY))
+      $thermalImage = [LabelPrint.Native.ThermalRaster]::Prepare(
+        $sourceImage,
+        $targetWidth,
+        $targetHeight,
+        $dpiX,
+        $dpiY,
+        [byte]180
+      )
+
+      $graphicsState = $graphics.Save()
+      try {
+        $graphics.PageUnit = [System.Drawing.GraphicsUnit]::Pixel
+        $graphics.PageScale = 1
+        $graphics.CompositingMode = [System.Drawing.Drawing2D.CompositingMode]::SourceCopy
+        $graphics.SmoothingMode = [System.Drawing.Drawing2D.SmoothingMode]::None
+        $graphics.InterpolationMode = [System.Drawing.Drawing2D.InterpolationMode]::NearestNeighbor
+        $graphics.PixelOffsetMode = [System.Drawing.Drawing2D.PixelOffsetMode]::Half
+        $graphics.DrawImageUnscaled($thermalImage, 0, 0)
+      }
+      finally {
+        $graphics.Restore($graphicsState)
+      }
+
       $script:pageIndex += 1
       $eventArgs.HasMorePages = $script:pageIndex -lt $imagePaths.Count
     }
     finally {
-      if (-not $eventArgs.HasMorePages -and $script:currentImage -ne $null) {
-        $script:currentImage.Dispose()
-        $script:currentImage = $null
+      if ($thermalImage -ne $null) {
+        $thermalImage.Dispose()
+      }
+      if ($sourceImage -ne $null) {
+        $sourceImage.Dispose()
       }
     }
   })
@@ -570,10 +681,6 @@ try {
 finally {
   if ($doc -ne $null) {
     $doc.Dispose()
-  }
-  if ($script:currentImage -ne $null) {
-    $script:currentImage.Dispose()
-    $script:currentImage = $null
   }
 }
 "#;

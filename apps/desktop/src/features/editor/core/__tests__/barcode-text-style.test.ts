@@ -21,16 +21,6 @@ function readFontSizePx(value: string | number | undefined): number {
   return Number.parseFloat(typeof value === "number" ? String(value) : value ?? "0");
 }
 
-function readScaleX(value: unknown): number {
-  const raw = String(value ?? "");
-  const match = /scaleX\(([^)]+)\)/.exec(raw);
-  if (!match) {
-    return 1;
-  }
-  const parsed = Number.parseFloat(match[1]);
-  return Number.isFinite(parsed) ? parsed : 1;
-}
-
 describe("buildBarcodeTextStyle", () => {
   it("keeps increasing rendered font size when configured font size grows", () => {
     const small = buildBarcodeTextStyle({ ...BASE_TEXT_STYLE, fontSize: 2.2 }, {
@@ -76,7 +66,7 @@ describe("buildBarcodeTextStyle", () => {
     expect(Math.abs(tallPx - shortPx)).toBeLessThan(0.01);
   });
 
-  it("compresses glyph width when text cannot fit in the box", () => {
+  it("shrinks the font uniformly when text cannot fit in the box", () => {
     const style = buildBarcodeTextStyle({ ...BASE_TEXT_STYLE, fontSize: 7 }, {
       mmToPx: 8,
       heightMm: 10,
@@ -84,11 +74,11 @@ describe("buildBarcodeTextStyle", () => {
       text: "12345678901234567890",
     });
 
-    expect(typeof style.transform).toBe("string");
-    expect(String(style.transform)).toContain("scaleX(");
+    expect(style.transform).toBeUndefined();
+    expect(readFontSizePx(style.fontSize as string | number | undefined)).toBeLessThan(56);
   });
 
-  it("allows aggressive horizontal compression for very narrow widths", () => {
+  it("allows aggressive uniform reduction for very narrow widths", () => {
     const style = buildBarcodeTextStyle({ ...BASE_TEXT_STYLE, fontSize: 7 }, {
       mmToPx: 8,
       heightMm: 10,
@@ -96,13 +86,11 @@ describe("buildBarcodeTextStyle", () => {
       text: "123456789012345678901234567890",
     });
 
-    const transform = String(style.transform ?? "");
-    const match = /scaleX\(([^)]+)\)/.exec(transform);
-    const scaleValue = match ? Number.parseFloat(match[1]) : 1;
-    expect(scaleValue).toBeLessThan(0.2);
+    expect(style.transform).toBeUndefined();
+    expect(readFontSizePx(style.fontSize as string | number | undefined)).toBeLessThan(56 * 0.2);
   });
 
-  it("shrinks barcode number scaleX proportionally when width narrows", () => {
+  it("shrinks barcode number font size proportionally when width narrows", () => {
     const wide = buildBarcodeTextStyle({ ...BASE_TEXT_STYLE, fontSize: 3.2 }, {
       mmToPx: 8,
       heightMm: 10,
@@ -116,11 +104,11 @@ describe("buildBarcodeTextStyle", () => {
       text: "1234567890123456789012345",
     });
 
-    const wideScale = readScaleX(wide.transform);
-    const narrowScale = readScaleX(narrow.transform);
+    const wideFontSize = readFontSizePx(wide.fontSize as string | number | undefined);
+    const narrowFontSize = readFontSizePx(narrow.fontSize as string | number | undefined);
 
-    expect(wideScale).toBeLessThanOrEqual(1);
-    expect(narrowScale).toBeLessThanOrEqual(1);
-    expect(narrowScale).toBeLessThan(wideScale);
+    expect(wide.transform).toBeUndefined();
+    expect(narrow.transform).toBeUndefined();
+    expect(narrowFontSize).toBeLessThan(wideFontSize);
   });
 });

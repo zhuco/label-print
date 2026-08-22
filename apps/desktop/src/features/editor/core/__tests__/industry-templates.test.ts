@@ -42,6 +42,15 @@ describe("industry templates", () => {
     }
   });
 
+  it("applies a template shape color to its actual stroke and fill", () => {
+    const elements = buildIndustryTemplateElements("retail-price", { widthMm: 60, heightMm: 40 }, (type) => `${type}-color`);
+    const shape = elements.find((element) => element.type === "shape");
+
+    expect(shape?.textStyle.color).toBe("#2a6fa8");
+    expect(shape?.textStyle.strokeColor).toBe("#2a6fa8");
+    expect(shape?.textStyle.fillColor).toBe("#2a6fa8");
+  });
+
   it("scales text together with the template when fitting a smaller canvas", () => {
     const large = buildIndustryTemplateElements(
       "food-label",

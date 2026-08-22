@@ -96,18 +96,21 @@ export function buildBarcodeTextStyle(textStyle: TextStyle, input: BuildBarcodeT
       : estimateSingleLineUnits(safeText) * fontPx * 0.62 + Math.max(0, safeText.length - 1) * letterSpacingPx;
   const horizontalScale =
     estimatedWidthPx > widthPx ? clamp(widthPx / estimatedWidthPx, 0.05, 1) : 1;
+  const fittedFontPx = Math.max(1, fontPx * horizontalScale);
+  const fittedLetterSpacingPx = letterSpacingPx * horizontalScale;
 
   return {
     fontFamily: textStyle.fontFamily,
-    fontSize: `${fontPx}px`,
+    // Reducing the font uniformly preserves stroke weight much better than a
+    // scaleX transform after the browser has rasterized the glyphs.
+    fontSize: `${fittedFontPx}px`,
     fontWeight: textStyle.fontWeight,
     fontStyle: textStyle.italic ? "italic" : "normal",
     textDecoration: buildTextDecoration(textStyle),
     color: textStyle.color,
-    letterSpacing: `${letterSpacingPx}px`,
+    letterSpacing: `${fittedLetterSpacingPx}px`,
     lineHeight,
     textAlign: textStyle.align,
-    transform: horizontalScale < 0.999 ? `scaleX(${horizontalScale})` : undefined,
     transformOrigin: `${getAlignTransformOrigin(textStyle.align)} center`,
   };
 }

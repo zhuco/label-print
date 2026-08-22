@@ -384,8 +384,10 @@ label {
   align-items: center;
   gap: 6px;
   padding: 4px 8px;
-  overflow-x: auto;
-  overflow-y: visible;
+  /* A scroll container clips its absolutely positioned children, even when
+     overflow-y is declared visible. Keep the command bar un-clipped so the
+     File dropdown can extend over the editor workspace. */
+  overflow: visible;
   position: relative;
   z-index: 8;
 }
@@ -930,18 +932,35 @@ label {
 }
 
 .editor-page {
+  height: 100%;
   min-height: 0;
   display: grid;
   grid-template-rows: auto minmax(0, 1fr);
   gap: 8px;
   padding: 10px;
+  overflow: hidden;
 }
 
 .workspace {
+  min-width: 0;
   min-height: 0;
   display: grid;
   grid-template-columns: var(--left-panel-width) minmax(0, 1fr) var(--right-panel-width);
+  grid-template-rows: minmax(0, 1fr);
+  align-items: stretch;
   gap: 6px;
+  overflow: hidden;
+}
+
+.editor-workspace {
+  grid-row: 2;
+}
+
+.editor-workspace > .canvas-stage-wrap,
+.editor-workspace:not(.compact) > .panel {
+  height: 100%;
+  max-height: 100%;
+  min-height: 0;
 }
 
 .editor-workspace.left-collapsed {

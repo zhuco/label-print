@@ -998,6 +998,7 @@ export function CanvasStage({ systemFonts }: CanvasStageProps) {
                         mmToPx,
                       })
                     : { scaleX: 1, scaleY: 1 };
+                const uniformTextFitScale = Math.min(textFitScale.scaleX, textFitScale.scaleY);
 
                 return (
                   <div
@@ -1019,13 +1020,13 @@ export function CanvasStage({ systemFonts }: CanvasStageProps) {
                         className="element-content"
                         style={{
                           fontFamily: element.textStyle.fontFamily,
-                          fontSize: `${Math.max(1, element.textStyle.fontSize * mmToPx)}px`,
+                          fontSize: `${Math.max(1, element.textStyle.fontSize * mmToPx * uniformTextFitScale)}px`,
                           fontWeight: element.textStyle.fontWeight,
                           fontStyle: element.textStyle.italic ? "italic" : "normal",
                           textDecoration: buildTextDecoration(element.textStyle),
                           textAlign: element.textStyle.align,
                           color: element.textStyle.color,
-                          letterSpacing: `${element.textStyle.letterSpacing * mmToPx}px`,
+                          letterSpacing: `${element.textStyle.letterSpacing * mmToPx * uniformTextFitScale}px`,
                           lineHeight: element.textStyle.lineHeight,
                           whiteSpace: isAutoWrap ? "pre-wrap" : "nowrap",
                           overflowWrap: isAutoWrap ? "anywhere" : "normal",
@@ -1041,10 +1042,7 @@ export function CanvasStage({ systemFonts }: CanvasStageProps) {
                       >
                         <span
                           className={`element-content-text ${isAutoWrap ? "is-auto-wrap" : "is-single-line"}`}
-                          style={{
-                            transform: `scale(${textFitScale.scaleX}, ${textFitScale.scaleY})`,
-                            transformOrigin: `${getAlignTransformOrigin(element.textStyle.align)} center`,
-                          }}
+                          style={{ transformOrigin: `${getAlignTransformOrigin(element.textStyle.align)} center` }}
                         >
                           {preview}
                         </span>
@@ -1151,6 +1149,33 @@ export function CanvasStage({ systemFonts }: CanvasStageProps) {
                             : element.binding.mode === "fixed"
                             ? readShapePresetIdFromBinding(element.binding.fixedValue)
                             : null;
+                        if (presetId === "rectangle" || presetId === "rounded-rectangle") {
+                          const borderWidthPx = toShapeBorderWidthPx(strokeWidth);
+                          return (
+                            <div
+                              className="shape-preview shape-preview-preset shape-preview-css-frame"
+                              style={{
+                                boxSizing: "border-box",
+                                backgroundColor: "transparent",
+                                borderRadius: presetId === "rounded-rectangle" ? "4px" : "0",
+                                ...(strokeDashArray.length > 0
+                                  ? {
+                                      borderColor: strokeColor,
+                                      borderStyle: "dashed",
+                                      borderWidth: `${borderWidthPx}px`,
+                                    }
+                                  : {
+                                      borderStyle: "none",
+                                      borderWidth: 0,
+                                      // Keep every edge inside the element box. The rectangle
+                                      // SVG used to put half of its stroke outside the viewBox,
+                                      // so its left edge could disappear after zoom/capture.
+                                      boxShadow: `inset 0 0 0 ${borderWidthPx}px ${strokeColor}`,
+                                    }),
+                              }}
+                            />
+                          );
+                        }
                         if (presetId) {
                           return (
                             <div
@@ -1569,9 +1594,6 @@ function resizeRect(
 
   return { xMm, yMm, widthMm, heightMm };
 }
-
-
-
 
 
 

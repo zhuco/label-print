@@ -472,7 +472,7 @@ describe("App shell", () => {
     const menuItems = Array.from(container.querySelectorAll<HTMLButtonElement>(".file-menu-item")).map((button) =>
       (button.textContent || "").trim()
     );
-    expect(menuItems).toEqual(["新建", "打开", "导入", "保存", "另存为...", "打印"]);
+    expect(menuItems).toEqual(["新建", "打开", "导入", "保存", "另存为", "打印"]);
 
     const importButton = screen.getByRole("button", { name: "导入" });
     fireEvent.click(importButton);
@@ -525,7 +525,7 @@ describe("App shell", () => {
     await waitFor(() => expect(createSpy).toHaveBeenCalledTimes(1));
 
     fireEvent.click(screen.getByRole("button", { name: "文件" }));
-    fireEvent.click(screen.getByRole("button", { name: "另存为..." }));
+    fireEvent.click(screen.getByRole("button", { name: "另存为" }));
     const saveAsDialog = screen.getByRole("dialog", { name: "另存为标签" });
     expect(screen.getByRole("button", { name: /云端标签/ })).toHaveClass("active");
     const nameInput = within(saveAsDialog).getByRole("textbox", { name: "标签名称" });
