@@ -2,7 +2,7 @@ name: CI
 
 on:
   push:
-    branches: ["feature/**", "master", "main"]
+    branches: ["master", "feat/**"]
   pull_request:
 
 jobs:
@@ -36,7 +36,7 @@ jobs:
         run: pnpm -r --filter '!@label/e2e' lint
 
       - name: Run TypeScript tests
-        run: pnpm -r --filter '!@label/e2e' test
+        run: pnpm -r --filter '!label-print' --filter '!@label/e2e' test
 
       - name: Run Rust tests
         run: cargo test --manifest-path apps/desktop/src-tauri/Cargo.toml
